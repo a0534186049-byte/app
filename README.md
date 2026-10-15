@@ -12,9 +12,12 @@ Device Lab is a Hebrew-first Android device diagnostics dashboard with a clean, 
 - No Internet permission and no root requirement
 
 ## Build an APK
-The GitHub Actions workflow in .github/workflows/android-apk.yml builds a debug APK on every push to main and can be run manually.
+The GitHub Actions workflow in .github/workflows/android-apk.yml builds a debug APK on pushes to main and supports manual runs.
 
-Open Actions, choose Build Device Lab APK, open the latest successful run, and download the DeviceLab-debug-apk artifact. Extract app-debug.apk and install it on the phone.
+Open Actions → Build Device Lab APK → latest successful run → Artifacts → DeviceLab-debug-apk. Download the ZIP, extract app-debug.apk, and install it on the phone.
 
 ## Important limitations
 Android restricts access to some hardware telemetry. Whole-device CPU utilization, official battery health percentage and battery cycle count are not claimed unless the operating system exposes reliable supported APIs. The first build should be tested on the target M36 Plus / Android 13 device.
+
+## Build verification
+The APK is not considered ready until GitHub Actions completes successfully and produces the DeviceLab-debug-apk artifact.
