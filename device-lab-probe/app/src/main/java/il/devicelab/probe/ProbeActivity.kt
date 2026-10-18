@@ -235,7 +235,10 @@ class ProbeActivity : Activity() {
     }
 
     private fun mark(name: String, raw: Any?, unit: String, source: String, status: String, classification: String = "unavailable", error: Throwable? = null) {
-        add(name, raw ?: JSONObject.NULL, unit, source, status, classification, error)
+        val noMeasurement = hasNoMeasurement(raw)
+        val safeStatus = if (noMeasurement && (status == "available" || status == "partial")) "empty" else status
+        val safeClassification = if (noMeasurement && safeStatus == "empty") "unavailable" else classification
+        add(name, raw ?: JSONObject.NULL, unit, source, safeStatus, safeClassification, error)
     }
 
     private fun readRaw(path: String, resultName: String = path) {
@@ -527,6 +530,7 @@ class ProbeActivity : Activity() {
             "ENERGY_COUNTER" to BatteryManager.BATTERY_PROPERTY_ENERGY_COUNTER
         )
         properties.forEach { (name, id) -> readBatteryLongProperty(bm, name, id) }
+        readBatteryIntProperty(bm, "STATUS", BatteryManager.BATTERY_PROPERTY_STATUS)
         mark("battery.property.STATE_OF_HEALTH", null, "API property", "Not in public BatteryManager constants for compile SDK 35; do not use hidden API", "unsupported", "unavailable")
         attempt("battery.BatteryManager.isCharging", "boolean", "BatteryManager.isCharging()") { bm.isCharging }
         try {
@@ -552,6 +556,19 @@ class ProbeActivity : Activity() {
             }
         } catch (t: Throwable) {
             mark("battery.property.$key", null, "raw API long", "BatteryManager.getLongProperty($id)", if (t is SecurityException) "blocked" else "error", "unavailable", t)
+        }
+    }
+
+    private fun readBatteryIntProperty(bm: BatteryManager, key: String, id: Int) {
+        try {
+            val value = bm.getIntProperty(id)
+            when {
+                value == Int.MIN_VALUE -> mark("battery.property.$key", "Int.MIN_VALUE", "raw API int", "BatteryManager.getIntProperty($id)", "unsupported")
+                value == 0 -> mark("battery.property.$key", value, "raw API int", "BatteryManager.getIntProperty($id)", "empty")
+                else -> mark("battery.property.$key", value, "raw API int; no conversion", "BatteryManager.getIntProperty($id)", "available", "reported")
+            }
+        } catch (t: Throwable) {
+            mark("battery.property.$key", null, "raw API int", "BatteryManager.getIntProperty($id)", if (t is SecurityException) "blocked" else "error", "unavailable", t)
         }
     }
 
