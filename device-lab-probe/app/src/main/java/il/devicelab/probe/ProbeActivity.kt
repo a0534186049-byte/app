@@ -344,7 +344,7 @@ class ProbeActivity : Activity() {
                     if (hpm == null) mark("cpu.HPM.temperature.$typeName.$sourceName", null, "raw float array", "HardwarePropertiesManager.getDeviceTemperatures", "unsupported")
                     else {
                         val values = hpm.getDeviceTemperatures(type, source)
-                        if (values.isNullOrEmpty()) mark("cpu.HPM.temperature.$typeName.$sourceName", values?.toList(), "raw float array", "HardwarePropertiesManager.getDeviceTemperatures", "empty")
+                        if (values == null || values.isEmpty()) mark("cpu.HPM.temperature.$typeName.$sourceName", values?.toList(), "raw float array", "HardwarePropertiesManager.getDeviceTemperatures", "empty")
                         else {
                             values.forEachIndexed { i, value ->
                                 val valid = value != HardwarePropertiesManager.UNDEFINED_TEMPERATURE && !value.isNaN() && !value.isInfinite() && value != 0f
@@ -379,7 +379,7 @@ class ProbeActivity : Activity() {
 
     private fun runTop() {
         val name = "cpu.top"
-        var process: Process? = null
+        var process: java.lang.Process? = null
         try {
             process = Runtime.getRuntime().exec(arrayOf("top", "-b", "-n", "1"))
             val finished = process.waitFor(3, TimeUnit.SECONDS)
@@ -408,10 +408,8 @@ class ProbeActivity : Activity() {
             attempt("memory.ActivityManager.MemoryInfo.totalMem", "bytes", "ActivityManager.MemoryInfo.totalMem") { info.totalMem }
             attempt("memory.ActivityManager.MemoryInfo.threshold", "bytes", "ActivityManager.MemoryInfo.threshold") { info.threshold }
             attempt("memory.ActivityManager.MemoryInfo.lowMemory", "boolean", "ActivityManager.MemoryInfo.lowMemory") { info.lowMemory }
-            if (Build.VERSION.SDK_INT >= 29) {
-                attempt("memory.ActivityManager.MemoryInfo.totalSwap", "bytes", "ActivityManager.MemoryInfo.totalSwap") { info.totalSwap }
-                attempt("memory.ActivityManager.MemoryInfo.availSwap", "bytes", "ActivityManager.MemoryInfo.availSwap") { info.availSwap }
-            } else mark("memory.ActivityManager.MemoryInfo.swap", null, "bytes", "API level", "unsupported")
+            mark("memory.ActivityManager.MemoryInfo.totalSwap", null, "bytes", "No public ActivityManager.MemoryInfo field in compile SDK", "unsupported", "unavailable")
+            mark("memory.ActivityManager.MemoryInfo.availSwap", null, "bytes", "No public ActivityManager.MemoryInfo field in compile SDK", "unsupported", "unavailable")
         } catch (t: Throwable) {
             mark("memory.ActivityManager.MemoryInfo", null, "object", "ActivityManager.getMemoryInfo", "error", "unavailable", t)
         }
@@ -448,7 +446,7 @@ class ProbeActivity : Activity() {
             val vols = sm.storageVolumes
             if (vols.isEmpty()) mark("storage.StorageManager.volumes", 0, "count", "StorageManager.storageVolumes", "empty")
             vols.forEachIndexed { i, volume ->
-                attempt("storage.volume.$i.id", "string", "StorageVolume.id") { volume.id }
+                mark("storage.volume.$i.id", null, "string", "StorageVolume public SDK", "unsupported", "unavailable")
                 attempt("storage.volume.$i.uuid", "string", "StorageVolume.uuid") { volume.uuid }
                 attempt("storage.volume.$i.state", "string", "StorageVolume.state") { volume.state }
                 attempt("storage.volume.$i.isPrimary", "boolean", "StorageVolume.isPrimary") { volume.isPrimary }
@@ -529,14 +527,7 @@ class ProbeActivity : Activity() {
             "ENERGY_COUNTER" to BatteryManager.BATTERY_PROPERTY_ENERGY_COUNTER
         )
         properties.forEach { (name, id) -> readBatteryLongProperty(bm, name, id) }
-        if (Build.VERSION.SDK_INT >= 35) {
-            try {
-                val healthId = BatteryManager.BATTERY_PROPERTY_STATE_OF_HEALTH
-                readBatteryLongProperty(bm, "STATE_OF_HEALTH", healthId)
-            } catch (t: Throwable) {
-                mark("battery.property.STATE_OF_HEALTH", null, "API property", "BatteryManager.BATTERY_PROPERTY_STATE_OF_HEALTH", "unsupported", "unavailable", t)
-            }
-        } else mark("battery.property.STATE_OF_HEALTH", "API unavailable on this runtime", "API property", "BatteryManager API level 35+", "unsupported")
+        mark("battery.property.STATE_OF_HEALTH", null, "API property", "Not in public BatteryManager constants for compile SDK 35; do not use hidden API", "unsupported", "unavailable")
         attempt("battery.BatteryManager.isCharging", "boolean", "BatteryManager.isCharging()") { bm.isCharging }
         try {
             val remaining = bm.computeChargeTimeRemaining()
@@ -635,8 +626,8 @@ class ProbeActivity : Activity() {
         } catch (t: Throwable) {
             mark("display.metrics", null, "display metrics", "WindowManager/Display", if (t is SecurityException) "blocked" else "error", "unavailable", t)
         }
-        attempt("graphics.OpenGL_ES_feature", "feature value", "PackageManager.FEATURE_OPENGLES") { packageManager.systemAvailableFeatures.filter { it.name == PackageManager.FEATURE_OPENGLES }.map { it.reqGlEsVersion } }
-        attempt("graphics.OpenGL_ES_version", "integer feature version", "PackageManager.getSystemAvailableFeatures") { packageManager.systemAvailableFeatures.filter { it.name == PackageManager.FEATURE_OPENGLES }.map { it.reqGlEsVersion } }
+        attempt("graphics.OpenGL_ES_feature", "FeatureInfo records", "PackageManager.systemAvailableFeatures entries with null name") { packageManager.systemAvailableFeatures.filter { it.name == null }.map { mapOf("name" to it.name, "reqGlEsVersion" to it.reqGlEsVersion) } }
+        attempt("graphics.OpenGL_ES_version", "raw integer version", "FeatureInfo.reqGlEsVersion; unnamed GLES feature") { packageManager.systemAvailableFeatures.filter { it.name == null }.map { it.reqGlEsVersion } }
         attempt("graphics.Vulkan.hardwareLevel", "integer feature version", "PackageManager.FEATURE_VULKAN_HARDWARE_LEVEL") { packageManager.systemAvailableFeatures.filter { it.name == PackageManager.FEATURE_VULKAN_HARDWARE_LEVEL }.map { it.version } }
         attempt("graphics.Vulkan.version", "integer feature version", "PackageManager.FEATURE_VULKAN_HARDWARE_VERSION") { packageManager.systemAvailableFeatures.filter { it.name == PackageManager.FEATURE_VULKAN_HARDWARE_VERSION }.map { it.version } }
         probeEgl()
@@ -704,11 +695,12 @@ class ProbeActivity : Activity() {
             attempt("sensors.$index.wakeUp", "boolean", "Sensor.isWakeUpSensor") { sensor.isWakeUpSensor }
             attempt("sensors.$index.reportingMode", "integer", "Sensor.reportingMode") { sensor.reportingMode }
             attempt("sensors.$index.stringType", "string", "Sensor.stringType") { sensor.stringType }
-            attempt("sensors.$index.requiredPermission", "string", "Sensor.requiredPermission") { sensor.requiredPermission }
-            if (!sensor.requiredPermission.isNullOrBlank()) {
-                mark("sensors.$index.sample", "skipped: sensor requires permission", "event values", "Sensor.requiredPermission", "blocked")
-            } else {
+            val permissionInfo = sensorPermissionInfo(sensor)
+            mark("sensors.$index.requiredPermission", permissionInfo, "best-effort classification", "Public Sensor API does not expose a required-permission getter", if (permissionInfo == "known_no_permission_by_sensor_type") "available" else if (permissionInfo.startsWith("permission_required:")) "blocked" else "unsupported", if (permissionInfo == "known_no_permission_by_sensor_type") "estimated" else "unavailable")
+            if (permissionInfo == "known_no_permission_by_sensor_type") {
                 sampleSensor(sm, sensor, index)
+            } else {
+                mark("sensors.$index.sample", "skipped: $permissionInfo", "event values", "Conservative permission policy; no extra permissions declared", if (permissionInfo.startsWith("permission_required:")) "blocked" else "unsupported", "unavailable")
             }
         }
     }
@@ -717,8 +709,26 @@ class ProbeActivity : Activity() {
         "name" to s.name, "type" to s.type, "vendor" to s.vendor, "version" to s.version,
         "maximumRange" to s.maximumRange, "resolution" to s.resolution, "power" to s.power,
         "minDelay" to s.minDelay, "maxDelay" to s.maxDelay, "wakeUp" to s.isWakeUpSensor,
-        "reportingMode" to s.reportingMode, "stringType" to s.stringType, "requiredPermission" to s.requiredPermission
+        "reportingMode" to s.reportingMode, "stringType" to s.stringType, "requiredPermission" to sensorPermissionInfo(s)
     )
+
+    private fun sensorPermissionInfo(sensor: Sensor): String = when (sensor.type) {
+        Sensor.TYPE_HEART_RATE -> "permission_required: android.permission.BODY_SENSORS"
+        Sensor.TYPE_STEP_COUNTER, Sensor.TYPE_STEP_DETECTOR -> "permission_required: android.permission.ACTIVITY_RECOGNITION"
+        Sensor.TYPE_ACCELEROMETER,
+        Sensor.TYPE_MAGNETIC_FIELD,
+        Sensor.TYPE_ORIENTATION,
+        Sensor.TYPE_GYROSCOPE,
+        Sensor.TYPE_LIGHT,
+        Sensor.TYPE_PRESSURE,
+        Sensor.TYPE_PROXIMITY,
+        Sensor.TYPE_GRAVITY,
+        Sensor.TYPE_LINEAR_ACCELERATION,
+        Sensor.TYPE_ROTATION_VECTOR,
+        Sensor.TYPE_GAME_ROTATION_VECTOR,
+        Sensor.TYPE_GEOMAGNETIC_ROTATION_VECTOR -> "known_no_permission_by_sensor_type"
+        else -> "unknown_permission_requirement; not sampled"
+    }
 
     private fun sampleSensor(sm: SensorManager, sensor: Sensor, index: Int) {
         val latch = CountDownLatch(1)
@@ -909,7 +919,6 @@ class ProbeActivity : Activity() {
             "fingerprint" to PackageManager.FEATURE_FINGERPRINT,
             "vulkan_level" to PackageManager.FEATURE_VULKAN_HARDWARE_LEVEL,
             "vulkan_version" to PackageManager.FEATURE_VULKAN_HARDWARE_VERSION,
-            "opengles" to PackageManager.FEATURE_OPENGLES
         )
         featureNames.forEach { (label, feature) ->
             attempt("features.has.$label", "boolean", "PackageManager.hasSystemFeature($feature)") { packageManager.hasSystemFeature(feature) }
@@ -962,7 +971,7 @@ class ProbeActivity : Activity() {
             }
         }
         attempt("settings.lowPowerModeGlobal", "integer raw setting", "Settings.Global.LOW_POWER_MODE") {
-            Settings.Global.getInt(contentResolver, Settings.Global.LOW_POWER_MODE, -1)
+            Settings.Global.getInt(contentResolver, "low_power", -1)
         }
     }
 
