@@ -538,7 +538,7 @@ class ProbeActivity : Activity() {
             when {
                 remaining == -1L -> mark("battery.BatteryManager.computeChargeTimeRemaining", remaining, "ms; raw API result", "BatteryManager.computeChargeTimeRemaining()", "unsupported")
                 remaining == 0L -> mark("battery.BatteryManager.computeChargeTimeRemaining", remaining, "ms; raw API result", "BatteryManager.computeChargeTimeRemaining()", "empty")
-                else -> mark("battery.BatteryManager.computeChargeTimeRemaining", remaining, "ms; raw API result", "BatteryManager.computeChargeTimeRemaining()", "available", "reported")
+                else -> mark("battery.BatteryManager.computeChargeTimeRemaining", remaining, "ms; raw API result", "BatteryManager.computeChargeTimeRemaining()", "available", "estimated")
             }
         } catch (t: Throwable) {
             mark("battery.BatteryManager.computeChargeTimeRemaining", null, "ms; raw API result", "BatteryManager.computeChargeTimeRemaining()", if (t is SecurityException) "blocked" else "error", "unavailable", t)
@@ -605,7 +605,15 @@ class ProbeActivity : Activity() {
                     mark("battery.power_supply.${file.path}", null, "raw text", file.path, when (t) { is SecurityException -> "blocked"; is java.io.FileNotFoundException -> "unsupported"; else -> "error" }, "unavailable", t)
                 }
             }
-            supplies.sortedBy { it.name }.forEach { walk(it, 0) }
+            supplies.sortedBy { it.name }.forEach { supply ->
+                listOf("cycle_count", "charge_full", "charge_full_design").forEach { attribute ->
+                    val expected = File(supply, attribute)
+                    if (!expected.exists()) {
+                        mark("battery.power_supply.expected.${supply.name}.$attribute", null, "raw text", expected.path, "unsupported", "unavailable")
+                    }
+                }
+                walk(supply, 0)
+            }
             mark("battery.power_supply.filesScanned", filesRead, "files", root.path, if (filesRead == 0) "empty" else "available", if (filesRead == 0) "unavailable" else "reported")
             if (filesRead >= maxFiles) mark("battery.power_supply.scanLimitReached", maxFiles, "files maximum", root.path, "partial")
         } catch (t: Throwable) {
@@ -1186,8 +1194,8 @@ class ProbeActivity : Activity() {
             is Short -> value.toInt() == 0 || value == Short.MIN_VALUE
             is Int -> value == 0 || value == Int.MIN_VALUE
             is Long -> value == 0L || value == Long.MIN_VALUE
-            is Float -> value == 0f || value == Float.MIN_VALUE || value == -Float.MAX_VALUE || value.isNaN() || value.isInfinite()
-            is Double -> value == 0.0 || value == Double.MIN_VALUE || value == -Double.MAX_VALUE || value.isNaN() || value.isInfinite()
+            is Float -> value == 0f || value == Float.MIN_VALUE || value.isNaN() || value.isInfinite()
+            is Double -> value == 0.0 || value == Double.MIN_VALUE || value.isNaN() || value.isInfinite()
             is String -> value.isBlank() || value.trim() == "0" || value.trim() == "Long.MIN_VALUE" || value.trim() == "Int.MIN_VALUE" || value.trim() == "-2147483648" || value.trim().equals("unknown", true)
             is Collection<*> -> value.isEmpty()
             is Map<*, *> -> value.isEmpty()
