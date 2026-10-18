@@ -64,12 +64,25 @@ class ProbeMonitorService : Service() {
 
     private fun sampleNow() {
         var lock: PowerManager.WakeLock? = null
+        var wakeLockAcquired = false
+        var wakeLockError: String? = null
         try {
             if (useWakeLock) {
-                val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-                lock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "DeviceLabProbe:sample")
-                lock.acquire(WAKE_LOCK_TIMEOUT_MS)
+                try {
+                    val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+                    lock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "DeviceLabProbe:sample")
+                    lock.acquire(WAKE_LOCK_TIMEOUT_MS)
+                    wakeLockAcquired = lock.isHeld
+                    if (!wakeLockAcquired) wakeLockError = "WakeLock acquire returned without isHeld=true"
+                } catch (t: Throwable) {
+                    wakeLockError = "${t.javaClass.name}: ${t.message ?: ""}"
+                    logEvent("wake_lock_acquire_error", "mode" to modeName(), "error" to wakeLockError)
+                    try { if (lock?.isHeld == true) lock.release() } catch (_: Throwable) { }
+                    lock = null
+                }
             }
+            // Keep taking comparable battery/RAM samples even if WakeLock is unavailable.
+            // WAKE_LOCK is intentionally not declared because the user allowlist excludes it.
             val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
             val memory = ActivityManager.MemoryInfo()
             am.getMemoryInfo(memory)
@@ -81,6 +94,8 @@ class ProbeMonitorService : Service() {
                 put("elapsedRealtimeMs", android.os.SystemClock.elapsedRealtime())
                 put("mode", modeName())
                 put("wakeLockRequested", useWakeLock)
+                put("wakeLockAcquired", wakeLockAcquired)
+                put("wakeLockError", wakeLockError ?: JSONObject.NULL)
                 put("memory.availMemBytes", memory.availMem)
                 put("memory.totalMemBytes", memory.totalMem)
                 put("memory.thresholdBytes", memory.threshold)
