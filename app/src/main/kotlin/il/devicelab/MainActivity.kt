@@ -494,7 +494,7 @@ class MainActivity : Activity() {
     private fun button(title:String,primary:Boolean,action:()->Unit)=Button(this).apply { text=title; isAllCaps=false; textSize=13f; setTextColor(if(primary) Color.WHITE else colors.accent); background=rounded(if(primary) colors.accent else colors.accentSoft,14); setOnClickListener { action() } }
     private fun txt(value:String,size:Float,color:Int,bold:Boolean=false)=TextView(this).apply { text=value; textSize=size; setTextColor(color); if(bold) setTypeface(typeface,Typeface.BOLD); gravity=Gravity.RIGHT; textDirection=View.TEXT_DIRECTION_FIRST_STRONG; layoutDirection=View.LAYOUT_DIRECTION_RTL; setLineSpacing(dp(2).toFloat(),1f) }
     private fun rounded(color:Int,radius:Int)=GradientDrawable().apply { setColor(color); cornerRadius=dp(radius).toFloat() }
-    private fun bordered()=GradientDrawable().apply { setColor(colors.surface); cornerRadius=dp(19).toFloat(); setStroke(dp(1),colors.line) }
+    private fun bordered()=GradientDrawable().apply { setColor(this@MainActivity.colors.surface); cornerRadius=dp(19).toFloat(); setStroke(dp(1),this@MainActivity.colors.line) }
     private fun gradient(a:Int,b:Int,radius:Int)=GradientDrawable(GradientDrawable.Orientation.TL_BR,intArrayOf(a,b)).apply { cornerRadius=dp(radius).toFloat() }
     private fun row()=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; layoutDirection=View.LAYOUT_DIRECTION_RTL; gravity=Gravity.TOP }
     private fun gap(h:Int) { content.addView(View(this),LinearLayout.LayoutParams(1,dp(h))) }
