@@ -81,8 +81,8 @@ class ProbeMonitorService : Service() {
                     lock = null
                 }
             }
-            // Keep taking comparable battery/RAM samples even if WakeLock is unavailable.
-            // WAKE_LOCK is intentionally not declared because the user allowlist excludes it.
+            // Keep taking comparable battery/RAM samples even if WakeLock acquisition fails.
+            // Every sample records whether the requested WakeLock was actually acquired.
             val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
             val memory = ActivityManager.MemoryInfo()
             am.getMemoryInfo(memory)
