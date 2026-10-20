@@ -71,6 +71,7 @@ class ProbeActivity : Activity() {
     private var latestChecks = JSONArray()
     private var latestRunMeta = JSONObject()
     private var isRunning = false
+    private var latestProcStatUsagePercent: Double? = null
     private val jsonLock = Any()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -134,6 +135,7 @@ class ProbeActivity : Activity() {
     private fun runAllProbes() {
         if (isRunning) return
         selectedRunLabel = runLabels.getOrElse(runLabelSpinner.selectedItemPosition) { runLabels[0] }
+        latestProcStatUsagePercent = null
         isRunning = true
         statusView.text = "הבדיקה רצה ברקע. סריקת חיישנים עשויה להימשך. אל תסגור את האפליקציה עד לסיום."
         worker.execute {
@@ -423,6 +425,7 @@ class ProbeActivity : Activity() {
                 mark(name, null, "%", "/proc/stat counters; intervalMs=$intervalMs", "unsupported", "unavailable")
             } else {
                 val percent = (((deltaTotal - deltaIdle).toDouble() / deltaTotal.toDouble()) * 100.0).coerceIn(0.0, 100.0)
+                if (key == "cpu") latestProcStatUsagePercent = percent
                 mark(name, percent, "% of CPU capacity over sample interval", "/proc/stat counter delta; intervalMs=$intervalMs; derived estimate", "available", "estimated")
             }
         }
@@ -517,6 +520,12 @@ class ProbeActivity : Activity() {
         val active = parts[1] + parts[2] + parts[3] + parts[6] + parts[7] + parts[8]
         val percent = (active / capacity * 100.0).coerceIn(0.0, 100.0)
         mark("cpu.top.systemBusyPercent", percent, "% of aggregate CPU capacity; top snapshot", "Derived from top CPU categories; raw line retained", "available", "estimated")
+        val procPercent = latestProcStatUsagePercent
+        if (procPercent == null) {
+            mark("cpu.compare.procStatVsTop.differencePercentagePoints", null, "percentage points", "Comparison unavailable because /proc/stat estimate was unavailable", "unsupported", "unavailable")
+        } else {
+            mark("cpu.compare.procStatVsTop.differencePercentagePoints", kotlin.math.abs(percent - procPercent), "percentage points", "Absolute difference between 1-second /proc/stat estimate and top snapshot", "available", "estimated")
+        }
         val appLine = output.lineSequence().firstOrNull { it.contains("il.devicelab.probe") }
         if (appLine != null) {
             val appMatch = Regex("""\s([0-9]+(?:\.[0-9]+)?)\s+[0-9]+(?:\.[0-9]+)?\s+[^\s]+\s+il\.devicelab\.probe\s*$""").find(appLine)
