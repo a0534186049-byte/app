@@ -2,7 +2,7 @@ name: Build Device Lab APK
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "device-lab-v2" ]
   workflow_dispatch:
 
 permissions:
