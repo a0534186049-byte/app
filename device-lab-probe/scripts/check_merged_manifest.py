@@ -23,6 +23,7 @@ allowed = {
     "android.permission.POST_NOTIFICATIONS",
     "android.permission.FOREGROUND_SERVICE",
     "android.permission.RECEIVE_BOOT_COMPLETED",
+    "android.permission.WAKE_LOCK",
 }
 extra = permissions - allowed
 missing = allowed - permissions
@@ -34,4 +35,4 @@ if extra:
     raise SystemExit("ERROR: unapproved permissions present: " + ", ".join(sorted(extra)))
 if missing:
     raise SystemExit("ERROR: expected permissions missing: " + ", ".join(sorted(missing)))
-print("PASS: merged manifest contains exactly the three approved permissions.")
+print("PASS: merged manifest contains exactly the four approved permissions.")
