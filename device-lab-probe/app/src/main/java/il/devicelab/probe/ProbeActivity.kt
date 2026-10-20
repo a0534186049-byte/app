@@ -496,13 +496,13 @@ class ProbeActivity : Activity() {
     }
 
     private fun recordTopCpuSummary(output: String) {
-        val line = output.lineSequence().firstOrNull { it.trimStart().startsWith("800%cpu") || Regex("""^\\s*\\d+%cpu\\s+""").containsMatchIn(it) }
+        val line = output.lineSequence().firstOrNull { val trimmed = it.trimStart(); trimmed.substringBefore("%cpu").toIntOrNull() != null && "%user" in trimmed }
         if (line == null) {
             mark("cpu.top.systemBusyPercent", null, "% of aggregate CPU capacity", "top aggregate CPU line", "unsupported", "unavailable")
             return
         }
         mark("cpu.top.rawCpuSummaryLine", line, "raw line; no conversion", "top aggregate CPU summary", "available", "reported")
-        val pattern = Regex("""^\\s*(\\d+)%cpu\\s+(\\d+)%user\\s+(\\d+)%nice\\s+(\\d+)%sys\\s+(\\d+)%idle\\s+(\\d+)%iow\\s+(\\d+)%irq\\s+(\\d+)%sirq\\s+(\\d+)%host""")
+        val pattern = Regex("""^\s*(\d+)%cpu\s+(\d+)%user\s+(\d+)%nice\s+(\d+)%sys\s+(\d+)%idle\s+(\d+)%iow\s+(\d+)%irq\s+(\d+)%sirq\s+(\d+)%host""")
         val match = pattern.find(line)
         if (match == null) {
             mark("cpu.top.systemBusyPercent", null, "% of aggregate CPU capacity", "Could not parse top aggregate CPU line", "unsupported", "unavailable")
@@ -519,7 +519,7 @@ class ProbeActivity : Activity() {
         mark("cpu.top.systemBusyPercent", percent, "% of aggregate CPU capacity; top snapshot", "Derived from top CPU categories; raw line retained", "available", "estimated")
         val appLine = output.lineSequence().firstOrNull { it.contains("il.devicelab.probe") }
         if (appLine != null) {
-            val appMatch = Regex("""\\s([0-9]+(?:\\.[0-9]+)?)\\s+[0-9]+(?:\\.[0-9]+)?\\s+[^\\s]+\\s+il\\.devicelab\\.probe\\s*$""").find(appLine)
+            val appMatch = Regex("""\s([0-9]+(?:\.[0-9]+)?)\s+[0-9]+(?:\.[0-9]+)?\s+[^\s]+\s+il\.devicelab\.probe\s*$""").find(appLine)
             if (appMatch != null) {
                 mark("cpu.top.probeProcessCpuPercent", appMatch.groupValues[1].toDoubleOrNull(), "% of one core; top snapshot", "top process row for il.devicelab.probe", "available", "estimated")
             } else {
