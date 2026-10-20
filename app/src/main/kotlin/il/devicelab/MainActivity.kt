@@ -435,7 +435,7 @@ class MainActivity : Activity() {
             put("cameraIds",JSONArray(runCatching { (getSystemService(Context.CAMERA_SERVICE) as CameraManager).cameraIdList.toList() }.getOrDefault(emptyList())))
             put("systemFeatures",JSONArray(runCatching { packageManager.systemAvailableFeatures.mapNotNull { it.name }.distinct().sorted() }.getOrDefault(emptyList())))
             put("settings",JSONObject().apply { put("powerSaveMode",runCatching { (getSystemService(Context.POWER_SERVICE) as PowerManager).isPowerSaveMode }.getOrDefault(false)); put("deviceIdleMode",runCatching { (getSystemService(Context.POWER_SERVICE) as PowerManager).isDeviceIdleMode }.getOrDefault(false)); put("uptimeMs",SystemClock.elapsedRealtime()) })
-            put("notes",JSONArray(listOf("CPU percentages are estimates derived from two /proc/stat samples.","Thermal conversions from raw millidegrees are estimates; raw values are retained.","Reported values are not necessarily independently verified hardware measurements.","No Internet permission is declared."))
+            put("notes",JSONArray(listOf("CPU percentages are estimates derived from two /proc/stat samples.","Thermal conversions from raw millidegrees are estimates; raw values are retained.","Reported values are not necessarily independently verified hardware measurements.","No Internet permission is declared.")))
         }
         val intent=Intent(Intent.ACTION_CREATE_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type="application/json"; putExtra(Intent.EXTRA_TITLE,"device-lab-v2-"+System.currentTimeMillis()+".json") }
         pendingJson=report.toString(2)
