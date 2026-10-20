@@ -108,7 +108,7 @@ class MainActivity : Activity() {
         root = LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; layoutDirection=View.LAYOUT_DIRECTION_RTL; setBackgroundColor(colors.bg) }
         val scroll = ScrollView(this).apply { isFillViewport=true; isVerticalScrollBarEnabled=false; setBackgroundColor(colors.bg) }
         content = LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; layoutDirection=View.LAYOUT_DIRECTION_RTL; setPadding(dp(18),dp(14),dp(18),dp(24)) }
-        scroll.addView(content, ScrollView.LayoutParams(-1,-2))
+        scroll.addView(content, -1, -2)
         root.addView(scroll,LinearLayout.LayoutParams(-1,0,1f))
         header()
         when(page) { Page.HOME -> homePage(); Page.PERFORMANCE -> performancePage(); Page.BATTERY -> batteryPage(); Page.HARDWARE -> hardwarePage(); Page.SETTINGS -> settingsPage() }
@@ -178,7 +178,7 @@ class MainActivity : Activity() {
         addDetail(load,"Load average",cpu.load?.trim()?.ifBlank { "ריק" } ?: "לא זמין")
         addDetail(load,"זמן CPU של האפליקציה",Process.getElapsedCpuTime().toString()+" ms","זמן מצטבר של Device Lab, לא המעבד כולו")
         addDetail(load,"זמן דגימה",cpu.sampledAt ?: if(cpuLoading) "דוגם…" else "טרם נדגם")
-        if(cpu.error!=null) addDetail(load,"הערה",cpu.error)
+        cpu.error?.let { addDetail(load,"הערה",it) }
         content.addView(load,match()); gap(10)
         content.addView(button("דגום מעבד מחדש",true) { refreshCpu() },match()); gap(12)
         noteCard("מה משמעות המספר?","זהו אומדן מחושב מהפרשי מוני CPU, לא מדידה של יצרן השבב. הבדיקה עצמה עשויה להוסיף עומס.")
@@ -452,7 +452,7 @@ class MainActivity : Activity() {
     }
 
     private fun deviceName()=listOf(Build.MANUFACTURER,Build.MODEL).filter { it.isNotBlank() }.distinct().joinToString(" ").ifBlank { "המכשיר שלי" }
-    private fun uptime():String { val s=SystemClock.elapsedRealtime()/1000; return (s/86400)+" ימים · "+((s%86400)/3600)+" שעות · "+((s%3600)/60)+" דקות" }
+    private fun uptime():String { val s=SystemClock.elapsedRealtime()/1000; return (s/86400).toString()+" ימים · "+((s%86400)/3600).toString()+" שעות · "+((s%3600)/60).toString()+" דקות" }
     private fun gb(v:Long)=fmt.format(v.toDouble()/1_000_000_000.0)
     private fun mb(v:Long)=fmt.format(v.toDouble()/1_000_000.0)
     private fun safeRead(path:String):String?=try { val f=File(path); if(!f.exists()||f.isDirectory) null else f.inputStream().bufferedReader(Charsets.UTF_8).use { it.readText() } } catch(_:Throwable) { null }
