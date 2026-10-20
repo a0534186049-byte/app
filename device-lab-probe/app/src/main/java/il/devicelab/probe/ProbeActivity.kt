@@ -147,14 +147,18 @@ class ProbeActivity : Activity() {
             } catch (_: Throwable) { Pair(Int.MIN_VALUE, Int.MIN_VALUE) }
             val actualStatus = actualBattery.first
             val actualPlugged = actualBattery.second
+            val powerSaveModeAtStart: Boolean? = try {
+                (getSystemService(Context.POWER_SERVICE) as PowerManager).isPowerSaveMode
+            } catch (_: Throwable) { null }
             val runMeta = JSONObject().apply {
                 put("userRunLabel", selectedRunLabel)
                 put("actualBatteryStatusRaw", actualStatus)
                 put("actualPluggedRaw", actualPlugged)
+                put("powerSaveModeAtStart", powerSaveModeAtStart ?: JSONObject.NULL)
                 put("runStartedAt", started)
                 put("apiLevel", Build.VERSION.SDK_INT)
                 put("packageName", packageName)
-                put("appVersion", "0.1.0")
+                put("appVersion", "0.2.0")
             }
             try {
                 runSection("identity") { checkIdentity() }
@@ -277,7 +281,7 @@ class ProbeActivity : Activity() {
     }
 
     private fun checkCpu() {
-        readRaw("/proc/stat", "cpu.proc.stat")
+        sampleProcStatCpuUsage()
         readRaw("/proc/loadavg", "cpu.proc.loadavg")
         readRaw("/proc/pressure/cpu", "cpu.proc.pressure")
         val cpuRoot = File("/sys/devices/system/cpu")
@@ -363,6 +367,79 @@ class ProbeActivity : Activity() {
         runTop()
     }
 
+    /**
+     * Reads /proc/stat twice over a short interval. CPU percentages are derived
+     * from counter deltas; the raw readings are retained alongside the estimates.
+     */
+    private fun sampleProcStatCpuUsage() {
+        val path = "/proc/stat"
+        val startedAt = SystemClock.elapsedRealtime()
+        val sample1 = try {
+            File(path).inputStream().bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
+        } catch (t: Throwable) {
+            mark("cpu.proc.stat.sample1", null, "raw text", path, if (t is SecurityException) "blocked" else "error", "unavailable", t)
+            mark("cpu.proc.stat", null, "raw text", path, "unsupported", "unavailable")
+            mark("cpu.proc.stat.usagePercent", null, "%", "Two /proc/stat samples required", "unsupported", "unavailable")
+            return
+        }
+        mark("cpu.proc.stat.sample1", sample1, "raw text; no conversion", "$path (sample 1)", if (sample1.isBlank()) "empty" else "available", if (sample1.isBlank()) "unavailable" else "reported")
+        try {
+            Thread.sleep(1_000L)
+        } catch (t: InterruptedException) {
+            Thread.currentThread().interrupt()
+            mark("cpu.proc.stat.sampleIntervalMs", null, "ms", "SystemClock.elapsedRealtime", "error", "unavailable", t)
+            return
+        }
+        val finishedAt = SystemClock.elapsedRealtime()
+        val sample2 = try {
+            File(path).inputStream().bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
+        } catch (t: Throwable) {
+            mark("cpu.proc.stat", null, "raw text", path, if (t is SecurityException) "blocked" else "error", "unavailable", t)
+            mark("cpu.proc.stat.usagePercent", null, "%", "Two /proc/stat samples required", "unsupported", "unavailable")
+            return
+        }
+        mark("cpu.proc.stat", sample2, "raw text; no conversion", "$path (sample 2)", if (sample2.isBlank()) "empty" else "available", if (sample2.isBlank()) "unavailable" else "reported")
+        val intervalMs = finishedAt - startedAt
+        mark("cpu.proc.stat.sampleIntervalMs", intervalMs, "ms", "SystemClock.elapsedRealtime delta between /proc/stat samples", if (intervalMs > 0) "available" else "empty", if (intervalMs > 0) "measured" else "unavailable")
+
+        val first = parseProcStatCpuCounters(sample1)
+        val second = parseProcStatCpuCounters(sample2)
+        val keys = (first.keys intersect second.keys).sortedWith(compareBy<String>({ if (it == "cpu") -1 else 0 }, { it.removePrefix("cpu").toIntOrNull() ?: -1 }))
+        if ("cpu" !in keys) {
+            mark("cpu.proc.stat.usagePercent", null, "%", "Missing aggregate cpu line in /proc/stat", "unsupported", "unavailable")
+            return
+        }
+        keys.forEach { key ->
+            val a = first[key] ?: return@forEach
+            val b = second[key] ?: return@forEach
+            val totalA = a.sum()
+            val totalB = b.sum()
+            val idleA = a.getOrElse(3) { 0L } + a.getOrElse(4) { 0L }
+            val idleB = b.getOrElse(3) { 0L } + b.getOrElse(4) { 0L }
+            val deltaTotal = totalB - totalA
+            val deltaIdle = idleB - idleA
+            val name = if (key == "cpu") "cpu.proc.stat.usagePercent" else "cpu.proc.stat.$key.usagePercent"
+            if (deltaTotal <= 0L || deltaIdle < 0L) {
+                mark(name, null, "%", "/proc/stat counters; intervalMs=$intervalMs", "unsupported", "unavailable")
+            } else {
+                val percent = (((deltaTotal - deltaIdle).toDouble() / deltaTotal.toDouble()) * 100.0).coerceIn(0.0, 100.0)
+                mark(name, percent, "% of CPU capacity over sample interval", "/proc/stat counter delta; intervalMs=$intervalMs; derived estimate", "available", "estimated")
+            }
+        }
+    }
+
+    private fun parseProcStatCpuCounters(raw: String): Map<String, List<Long>> {
+        val result = linkedMapOf<String, List<Long>>()
+        raw.lineSequence().forEach { line ->
+            val parts = line.trim().split(Regex("\\s+"))
+            val key = parts.firstOrNull() ?: return@forEach
+            if (key != "cpu" && !key.matches(Regex("cpu[0-9]+"))) return@forEach
+            val values = parts.drop(1).take(8).mapNotNull { it.toLongOrNull() }
+            if (values.size >= 4) result[key] = values
+        }
+        return result
+    }
+
     private fun scanThermalZones() {
         val root = File("/sys/class/thermal")
         try {
@@ -372,11 +449,26 @@ class ProbeActivity : Activity() {
                 attempt("cpu.thermal_zone_list", "names", root.path) { zones.map { it.name } }
                 zones.forEach { zone ->
                     readRaw("${zone.path}/type", "cpu.${zone.name}.type")
-                    readRaw("${zone.path}/temp", "cpu.${zone.name}.temp")
+                    readThermalZoneTemp(zone)
                 }
             }
         } catch (t: Throwable) {
             mark("cpu.thermal_zone_list", null, "count", root.path, if (t is SecurityException) "blocked" else "error", "unavailable", t)
+        }
+    }
+
+    private fun readThermalZoneTemp(zone: File) {
+        val path = "${zone.path}/temp"
+        val name = "cpu.${zone.name}.temp"
+        try {
+            val raw = File(path).inputStream().bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
+            if (raw.trim() == "-127000") {
+                mark(name, raw, "raw text; sentinel -127000 flagged invalid", path, "partial", "unavailable")
+            } else {
+                mark(name, raw, "raw text; no conversion", path, if (raw.isBlank()) "empty" else "available", if (raw.isBlank()) "unavailable" else "reported")
+            }
+        } catch (t: Throwable) {
+            mark(name, null, "raw text; no conversion", path, when (t) { is SecurityException -> "blocked"; is java.io.FileNotFoundException -> "unsupported"; else -> "error" }, "unavailable", t)
         }
     }
 
@@ -394,12 +486,46 @@ class ProbeActivity : Activity() {
                 val out = process.inputStream.bufferedReader().use { it.readText() }
                 val err = process.errorStream.bufferedReader().use { it.readText() }
                 mark(name, JSONObject().put("exitCode", process.exitValue()).put("stdout", out).put("stderr", err), "raw process output", "Runtime.exec(top -b -n 1)", if (out.isBlank() && err.isBlank()) "empty" else "available", if (out.isBlank() && err.isBlank()) "unavailable" else "reported")
+                recordTopCpuSummary(out)
             }
         } catch (t: Throwable) {
             mark(name, null, "raw process output", "Runtime.exec(top -b -n 1)", if (t is SecurityException) "blocked" else "error", "unavailable", t)
         } finally {
             try { process?.destroy() } catch (_: Throwable) { }
         }
+    }
+
+    private fun recordTopCpuSummary(output: String) {
+        val line = output.lineSequence().firstOrNull { it.trimStart().startsWith("800%cpu") || Regex("""^\\s*\\d+%cpu\\s+""").containsMatchIn(it) }
+        if (line == null) {
+            mark("cpu.top.systemBusyPercent", null, "% of aggregate CPU capacity", "top aggregate CPU line", "unsupported", "unavailable")
+            return
+        }
+        mark("cpu.top.rawCpuSummaryLine", line, "raw line; no conversion", "top aggregate CPU summary", "available", "reported")
+        val pattern = Regex("""^\\s*(\\d+)%cpu\\s+(\\d+)%user\\s+(\\d+)%nice\\s+(\\d+)%sys\\s+(\\d+)%idle\\s+(\\d+)%iow\\s+(\\d+)%irq\\s+(\\d+)%sirq\\s+(\\d+)%host""")
+        val match = pattern.find(line)
+        if (match == null) {
+            mark("cpu.top.systemBusyPercent", null, "% of aggregate CPU capacity", "Could not parse top aggregate CPU line", "unsupported", "unavailable")
+            return
+        }
+        val parts = (1..9).map { match.groupValues[it].toDoubleOrNull() ?: 0.0 }
+        val capacity = parts[0]
+        if (capacity <= 0.0) {
+            mark("cpu.top.systemBusyPercent", null, "% of aggregate CPU capacity", "Invalid top CPU capacity", "unsupported", "unavailable")
+            return
+        }
+        val active = parts[1] + parts[2] + parts[3] + parts[6] + parts[7] + parts[8]
+        val percent = (active / capacity * 100.0).coerceIn(0.0, 100.0)
+        mark("cpu.top.systemBusyPercent", percent, "% of aggregate CPU capacity; top snapshot", "Derived from top CPU categories; raw line retained", "available", "estimated")
+        val appLine = output.lineSequence().firstOrNull { it.contains("il.devicelab.probe") }
+        if (appLine != null) {
+            val appMatch = Regex("""\\s([0-9]+(?:\\.[0-9]+)?)\\s+[0-9]+(?:\\.[0-9]+)?\\s+[^\\s]+\\s+il\\.devicelab\\.probe\\s*$""").find(appLine)
+            if (appMatch != null) {
+                mark("cpu.top.probeProcessCpuPercent", appMatch.groupValues[1].toDoubleOrNull(), "% of one core; top snapshot", "top process row for il.devicelab.probe", "available", "estimated")
+            } else {
+                mark("cpu.top.probeProcessCpuPercent", null, "% of one core; top snapshot", "Could not parse Probe process row: $appLine", "unsupported", "unavailable")
+            }
+        } else mark("cpu.top.probeProcessCpuPercent", null, "% of one core; top snapshot", "Probe process row not present in top output", "unsupported", "unavailable")
     }
 
     private fun checkMemory() {
@@ -533,6 +659,15 @@ class ProbeActivity : Activity() {
         readBatteryIntProperty(bm, "STATUS", BatteryManager.BATTERY_PROPERTY_STATUS)
         mark("battery.property.STATE_OF_HEALTH", null, "API property", "Not in public BatteryManager constants for compile SDK 35; do not use hidden API", "unsupported", "unavailable")
         attempt("battery.BatteryManager.isCharging", "boolean", "BatteryManager.isCharging()") { bm.isCharging }
+        if (intent != null) {
+            val rawStatus = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
+            val rawPlugged = intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, -1)
+            val isCharging = try { bm.isCharging } catch (_: Throwable) { null }
+            val statusImpliesCharging = rawStatus == BatteryManager.BATTERY_STATUS_CHARGING
+            val contradiction = isCharging != null && statusImpliesCharging && !isCharging
+            val detail = mapOf("batteryStatusRaw" to rawStatus, "pluggedRaw" to rawPlugged, "isChargingApi" to isCharging, "statusImpliesCharging" to statusImpliesCharging)
+            mark("battery.chargingStatusConsistency", detail, "raw comparison", "ACTION_BATTERY_CHANGED versus BatteryManager.isCharging()", if (contradiction) "partial" else "available", if (contradiction) "unavailable" else "reported")
+        }
         try {
             val remaining = bm.computeChargeTimeRemaining()
             when {
@@ -551,7 +686,6 @@ class ProbeActivity : Activity() {
             val value = bm.getLongProperty(id)
             when {
                 value == Long.MIN_VALUE -> mark("battery.property.$key", "Long.MIN_VALUE", "raw API long", "BatteryManager.getLongProperty($id)", "unsupported")
-                value == 0L -> mark("battery.property.$key", value, "raw API long", "BatteryManager.getLongProperty($id)", "empty")
                 else -> mark("battery.property.$key", value, "raw API long; no conversion", "BatteryManager.getLongProperty($id)", "available", "reported")
             }
         } catch (t: Throwable) {
@@ -564,7 +698,6 @@ class ProbeActivity : Activity() {
             val value = bm.getIntProperty(id)
             when {
                 value == Int.MIN_VALUE -> mark("battery.property.$key", "Int.MIN_VALUE", "raw API int", "BatteryManager.getIntProperty($id)", "unsupported")
-                value == 0 -> mark("battery.property.$key", value, "raw API int", "BatteryManager.getIntProperty($id)", "empty")
                 else -> mark("battery.property.$key", value, "raw API int; no conversion", "BatteryManager.getIntProperty($id)", "available", "reported")
             }
         } catch (t: Throwable) {
@@ -575,46 +708,46 @@ class ProbeActivity : Activity() {
     private fun scanPowerSupply() {
         val root = File("/sys/class/power_supply")
         var filesRead = 0
-        val visited = HashSet<String>()
+        var directoriesSkipped = 0
         val maxFiles = 700
         try {
-            val supplies = root.listFiles()
+            val supplies = root.listFiles()?.sortedBy { it.name }
             if (supplies.isNullOrEmpty()) {
                 mark("battery.power_supply.list", supplies?.size, "count", root.path, "empty")
                 return
             }
-            attempt("battery.power_supply.supplies", "names", root.path) { supplies.map { it.name } }
-            fun walk(file: File, depth: Int) {
-                if (filesRead >= maxFiles) return
-                val canonical = try { file.canonicalPath } catch (_: Throwable) { file.absolutePath }
-                if (!visited.add(canonical)) return
-                try {
-                    if (file.isDirectory) {
-                        if (depth < 5) file.listFiles()?.sortedBy { it.name }?.forEach { walk(it, depth + 1) }
-                        else mark("battery.power_supply.${file.path}.depth", depth, "depth", file.path, "unsupported")
-                    } else {
-                        filesRead++
-                        val path = file.path
-                        attempt("battery.power_supply.$path", "raw text; no conversion", path, "reported") {
-                            val text = file.inputStream().bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
-                            if (text.length > 16000) text.substring(0, 16000) + "...[truncated at 16000 characters]" else text
-                        }
-                    }
-                } catch (t: Throwable) {
-                    filesRead++
-                    mark("battery.power_supply.${file.path}", null, "raw text", file.path, when (t) { is SecurityException -> "blocked"; is java.io.FileNotFoundException -> "unsupported"; else -> "error" }, "unavailable", t)
-                }
-            }
-            supplies.sortedBy { it.name }.forEach { supply ->
-                listOf("cycle_count", "charge_full", "charge_full_design").forEach { attribute ->
+            mark("battery.power_supply.supplies", supplies.map { it.name }, "names", root.path, "available", "reported")
+            mark("battery.power_supply.scanPolicy", "direct files only; no recursion into device/ or subsystem/", "policy", root.path, "available", "reported")
+            val expectedAttributes = listOf("cycle_count", "charge_full", "charge_full_design")
+            for (supply in supplies) {
+                if (filesRead >= maxFiles) break
+                expectedAttributes.forEach { attribute ->
                     val expected = File(supply, attribute)
                     if (!expected.exists()) {
                         mark("battery.power_supply.expected.${supply.name}.$attribute", null, "raw text", expected.path, "unsupported", "unavailable")
                     }
                 }
-                walk(supply, 0)
+                val children = try { supply.listFiles()?.sortedBy { it.name } } catch (_: Throwable) { null }
+                if (children == null) {
+                    mark("battery.power_supply.${supply.name}.directList", null, "entries", supply.path, "blocked", "unavailable")
+                    continue
+                }
+                for (child in children) {
+                    if (child.isDirectory) {
+                        directoriesSkipped++
+                        continue
+                    }
+                    if (filesRead >= maxFiles) break
+                    filesRead++
+                    val path = child.path
+                    attempt("battery.power_supply.$path", "raw text; no conversion", path, "reported") {
+                        val raw = child.inputStream().bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
+                        if (raw.length > 16000) raw.substring(0, 16000) + "...[truncated at 16000 characters]" else raw
+                    }
+                }
             }
-            mark("battery.power_supply.filesScanned", filesRead, "files", root.path, if (filesRead == 0) "empty" else "available", if (filesRead == 0) "unavailable" else "reported")
+            mark("battery.power_supply.filesScanned", filesRead, "direct files", root.path, if (filesRead == 0) "empty" else "available", if (filesRead == 0) "unavailable" else "reported")
+            mark("battery.power_supply.directoriesSkipped", directoriesSkipped, "directories", "Nested directory trees intentionally not traversed", "available", "reported")
             if (filesRead >= maxFiles) mark("battery.power_supply.scanLimitReached", maxFiles, "files maximum", root.path, "partial")
         } catch (t: Throwable) {
             mark("battery.power_supply.list", null, "count", root.path, if (t is SecurityException) "blocked" else "error", "unavailable", t)
@@ -1095,12 +1228,12 @@ class ProbeActivity : Activity() {
         }
         val report = JSONObject().apply {
             put("app", "Device Lab Probe")
-            put("version", "0.1.0")
+            put("version", "0.2.0")
             put("createdAt", now())
             put("targetSdk", 33)
             put("minSdk", 33)
             put("internetPermissionDeclared", false)
-            put("allowedDeclaredPermissions", JSONArray(listOf(Manifest.permission.POST_NOTIFICATIONS, Manifest.permission.FOREGROUND_SERVICE, Manifest.permission.RECEIVE_BOOT_COMPLETED)))
+            put("allowedDeclaredPermissions", JSONArray(listOf(Manifest.permission.POST_NOTIFICATIONS, Manifest.permission.FOREGROUND_SERVICE, Manifest.permission.RECEIVE_BOOT_COMPLETED, Manifest.permission.WAKE_LOCK)))
             put("run", snapshotRun)
             put("checks", snapshotChecks)
             put("historicalProcessExitReasons", historicalExitReasons())
@@ -1190,13 +1323,13 @@ class ProbeActivity : Activity() {
     private fun hasNoMeasurement(value: Any?): Boolean {
         if (value == null || value === JSONObject.NULL) return true
         return when (value) {
-            is Byte -> value.toInt() == 0 || value == Byte.MIN_VALUE
-            is Short -> value.toInt() == 0 || value == Short.MIN_VALUE
-            is Int -> value == 0 || value == Int.MIN_VALUE
-            is Long -> value == 0L || value == Long.MIN_VALUE
-            is Float -> value == 0f || value == Float.MIN_VALUE || value.isNaN() || value.isInfinite()
-            is Double -> value == 0.0 || value == Double.MIN_VALUE || value.isNaN() || value.isInfinite()
-            is String -> value.isBlank() || value.trim() == "0" || value.trim() == "Long.MIN_VALUE" || value.trim() == "Int.MIN_VALUE" || value.trim() == "-2147483648" || value.trim().equals("unknown", true)
+            is Byte -> value == Byte.MIN_VALUE
+            is Short -> value == Short.MIN_VALUE
+            is Int -> value == Int.MIN_VALUE
+            is Long -> value == Long.MIN_VALUE
+            is Float -> value == Float.MIN_VALUE || value.isNaN() || value.isInfinite()
+            is Double -> value == Double.MIN_VALUE || value.isNaN() || value.isInfinite()
+            is String -> value.isBlank() || value.trim() == "Long.MIN_VALUE" || value.trim() == "Int.MIN_VALUE" || value.trim() == "-2147483648" || value.trim().equals("unknown", true)
             is Collection<*> -> value.isEmpty()
             is Map<*, *> -> value.isEmpty()
             is JSONArray -> value.length() == 0
