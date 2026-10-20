@@ -356,7 +356,7 @@ class ProbeActivity : Activity() {
                         if (values == null || values.isEmpty()) mark("cpu.HPM.temperature.$typeName.$sourceName", values?.toList(), "raw float array", "HardwarePropertiesManager.getDeviceTemperatures", "empty")
                         else {
                             values.forEachIndexed { i, value ->
-                                val valid = value != HardwarePropertiesManager.UNDEFINED_TEMPERATURE && !value.isNaN() && !value.isInfinite() && value != 0f
+                                val valid = value != HardwarePropertiesManager.UNDEFINED_TEMPERATURE && !value.isNaN() && !value.isInfinite()
                                 mark("cpu.HPM.temperature.$typeName.$sourceName.$i", value, "API temperature unit", "HardwarePropertiesManager.getDeviceTemperatures", if (valid) "available" else "empty", if (valid) "reported" else "unavailable")
                             }
                         }
@@ -681,7 +681,6 @@ class ProbeActivity : Activity() {
             val remaining = bm.computeChargeTimeRemaining()
             when {
                 remaining == -1L -> mark("battery.BatteryManager.computeChargeTimeRemaining", remaining, "ms; raw API result", "BatteryManager.computeChargeTimeRemaining()", "unsupported")
-                remaining == 0L -> mark("battery.BatteryManager.computeChargeTimeRemaining", remaining, "ms; raw API result", "BatteryManager.computeChargeTimeRemaining()", "empty")
                 else -> mark("battery.BatteryManager.computeChargeTimeRemaining", remaining, "ms; raw API result", "BatteryManager.computeChargeTimeRemaining()", "available", "estimated")
             }
         } catch (t: Throwable) {
@@ -1338,7 +1337,7 @@ class ProbeActivity : Activity() {
             is Long -> value == Long.MIN_VALUE
             is Float -> value == Float.MIN_VALUE || value.isNaN() || value.isInfinite()
             is Double -> value == Double.MIN_VALUE || value.isNaN() || value.isInfinite()
-            is String -> value.isBlank() || value.trim() == "Long.MIN_VALUE" || value.trim() == "Int.MIN_VALUE" || value.trim() == "-2147483648" || value.trim().equals("unknown", true)
+            is String -> value.isBlank() || value.trim() == "Long.MIN_VALUE" || value.trim() == "Int.MIN_VALUE" || value.trim() == "-2147483648"
             is Collection<*> -> value.isEmpty()
             is Map<*, *> -> value.isEmpty()
             is JSONArray -> value.length() == 0
