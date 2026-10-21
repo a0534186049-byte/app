@@ -20,6 +20,8 @@ import android.os.PowerManager
 import android.os.Process
 import android.os.StatFs
 import android.os.SystemClock
+import android.os.storage.StorageManager
+import android.os.storage.StorageVolume
 import android.util.DisplayMetrics
 import android.view.Gravity
 import android.view.View
@@ -52,6 +54,7 @@ class MainActivity : Activity() {
     private data class Disk(val path:String,val total:Long?,val available:Long?,val free:Long?) {
         val usedPercent:Int? get() = if (total!=null && available!=null && total>0) (((total-available).coerceAtLeast(0)*100.0)/total).toInt().coerceIn(0,100) else null
     }
+    private data class VolumeInfo(val description:String,val path:String?,val state:String,val isPrimary:Boolean,val isRemovable:Boolean,val disk:Disk?)
     private data class Battery(val level:Int?,val status:Int,val plugged:Int,val tempRaw:Int?,val voltageRaw:Int?,val healthRaw:Int?,val tech:String?,val isCharging:Boolean?,val currentNow:Long?,val currentAvg:Long?,val chargeCounter:Long?,val energyCounter:Long?,val extras:Map<String,String>) {
         val statusText get() = when(status) {
             BatteryManager.BATTERY_STATUS_CHARGING -> "בטעינה"
@@ -132,7 +135,7 @@ class MainActivity : Activity() {
     }
 
     private fun homePage() {
-        val m=memory(); val d=disk(Environment.getDataDirectory()); val b=battery()
+        val m=memory(); val d=disk(Environment.getDataDirectory()); val b=battery(); val removable=removableVolumes()
         val hero=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; layoutDirection=View.LAYOUT_DIRECTION_RTL; setPadding(dp(20),dp(21),dp(20),dp(21)); background=gradient(colors.heroA,colors.heroB,24) }
         hero.addView(txt("סקירה כללית",13f,Color.rgb(205,218,243),true)); gapIn(hero,8)
         hero.addView(txt(deviceName(),23f,Color.WHITE,true)); gapIn(hero,6)
@@ -149,7 +152,20 @@ class MainActivity : Activity() {
         r2.addView(metric("מעבד",cpu.percent?.let { fmt.format(it)+"%" } ?: if(cpuLoading) "דוגם…" else "לא זמין",if(cpu.sampledAt!=null) "אומדן מדגימות /proc/stat" else "לחץ רענון למדידה",colors.good,cpu.percent?.toInt()),weight())
         r2.addView(space(9))
         r2.addView(metric("אחסון פנוי",d.available?.let { gb(it)+" GB" } ?: "לא זמין",d.usedPercent?.let { "$it% בשימוש" } ?: "לא דווח",colors.accent,d.usedPercent),weight())
-        content.addView(r2,match()); gap(20)
+        content.addView(r2,match()); gap(10)
+        val storageCard=card("כרטיס זיכרון נשלף","זיהוי דרך StorageManager — בנפרד מהאחסון המדומה של המשתמש")
+        if(removable.isEmpty()) storageCard.addView(txt("לא זוהה כרגע כרטיס נשלף דרך StorageManager.",12f,colors.muted))
+        removable.forEachIndexed { index, volume ->
+            addDetail(storageCard,"כרטיס",volume.description)
+            addDetail(storageCard,"מצב",volume.state)
+            addDetail(storageCard,"נתיב",volume.path ?: "לא נחשף")
+            val sd=volume.disk
+            addDetail(storageCard,"נפח כולל",sd?.total?.let { gb(it)+" GB" } ?: "לא זמין")
+            addDetail(storageCard,"מקום פנוי",sd?.available?.let { gb(it)+" GB" } ?: "לא זמין")
+            addDetail(storageCard,"זיהוי", "נשלף=${volume.isRemovable} · ראשי=${volume.isPrimary}")
+            if(index<removable.lastIndex) gapIn(storageCard,5)
+        }
+        content.addView(storageCard,match()); gap(20)
         section("מעבר מהיר","בחר תחום כדי לפתוח מסך ייעודי")
         val r3=row(); r3.addView(shortcut("ביצועים","מעבד, תדרים וטמפרטורות","↗") { open(Page.PERFORMANCE) },weight()); r3.addView(space(9)); r3.addView(shortcut("סוללה","זרם, טעינה וקובצי מערכת","ϟ") { open(Page.BATTERY) },weight()); content.addView(r3,match()); gap(9)
         val r4=row(); r4.addView(shortcut("רכיבי המכשיר","מסך, חיישנים וקודקים","◈") { open(Page.HARDWARE) },weight()); r4.addView(space(9)); r4.addView(shortcut("הגדרות ואבחון","ערכת נושא וייצוא JSON","⚙") { open(Page.SETTINGS) },weight()); content.addView(r4,match()); gap(15)
@@ -168,7 +184,7 @@ class MainActivity : Activity() {
         cpu.frequencies.take(16).forEach { addDetail(freq,it.first,it.second) }
         if(cpu.frequencies.size>16) addDetail(freq,"רשומות נוספות",(cpu.frequencies.size-16).toString())
         content.addView(freq,match()); gap(9)
-        val therm=card("טמפרטורות מערכת","ערכי −127000 נשמרים אך מסומנים כלא תקפים")
+        val therm=card("טמפרטורות מערכת","ערכים שליליים נשמרים כנתון גולמי אך מסומנים כלא תקפים")
         if(cpu.thermals.isEmpty()) therm.addView(txt("לא נמצאו אזורי טמפרטורה קריאים.",12f,colors.muted))
         cpu.thermals.forEach { t ->
             val v=if(t.invalid) "לא תקף · "+t.raw else if(t.celsius!=null) fmt.format(t.celsius)+"°C · גולמי "+t.raw else t.raw
@@ -361,8 +377,8 @@ class MainActivity : Activity() {
         val zones=runCatching { File("/sys/class/thermal").listFiles()?.filter { it.name.startsWith("thermal_zone") }?.sortedBy { it.name } }.getOrNull().orEmpty()
         return zones.mapNotNull { z ->
             val raw=safeRead(z.path+"/temp")?.trim() ?: return@mapNotNull null
-            val n=raw.toLongOrNull(); val invalid=raw=="-127000"
-            val c=if(!invalid && n!=null && kotlin.math.abs(n)>=1000L && n in -50000L..200000L) n/1000.0 else null
+            val n=raw.toLongOrNull(); val invalid=n != null && n < 0L
+            val c=if(!invalid && n!=null && n in 1000L..200000L) n/1000.0 else null
             Thermal(z.name,safeRead(z.path+"/type")?.trim().orEmpty(),raw,c,invalid)
         }
     }
@@ -385,6 +401,14 @@ class MainActivity : Activity() {
         return Memory(v.totalMem,v.availMem,v.threshold,v.lowMemory)
     }
     private fun disk(file:File):Disk=try { val v=StatFs(file.absolutePath); Disk(file.absolutePath,v.totalBytes,v.availableBytes,v.freeBytes) } catch(_:Throwable) { Disk(file.absolutePath,null,null,null) }
+    private fun storageVolumesInfo():List<VolumeInfo> = runCatching {
+        val manager=getSystemService(Context.STORAGE_SERVICE) as StorageManager
+        manager.storageVolumes.filter { it.isRemovable && !it.isPrimary }.map { volume ->
+            val dir=runCatching { volume.directory }.getOrNull()
+            VolumeInfo(runCatching { volume.getDescription(this) }.getOrDefault("אחסון נשלף"),dir?.absolutePath,volume.state,volume.isPrimary,volume.isRemovable,dir?.let { disk(it) })
+        }
+    }.getOrDefault(emptyList())
+    private fun removableVolumes():List<VolumeInfo> = storageVolumesInfo().ifEmpty { emptyList() }
     private fun battery():Battery {
         val i=runCatching { registerReceiver(null,android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED)) }.getOrNull()
         val lev=i?.getIntExtra(BatteryManager.EXTRA_LEVEL,-1) ?: -1; val scale=i?.getIntExtra(BatteryManager.EXTRA_SCALE,-1) ?: -1
@@ -400,7 +424,7 @@ class MainActivity : Activity() {
     }
 
     private fun exportReport() {
-        val m=memory(); val d=disk(Environment.getDataDirectory()); val ext=disk(Environment.getExternalStorageDirectory()); val b=battery()
+        val m=memory(); val d=disk(Environment.getDataDirectory()); val emulated=disk(Environment.getExternalStorageDirectory()); val volumes=storageVolumesInfo(); val b=battery()
         val sensors=runCatching { (getSystemService(Context.SENSOR_SERVICE) as SensorManager).getSensorList(Sensor.TYPE_ALL) }.getOrDefault(emptyList())
         val codecs=runCatching { MediaCodecList(MediaCodecList.ALL_CODECS).codecInfos.toList() }.getOrDefault(emptyList())
         val report=JSONObject().apply {
@@ -414,7 +438,11 @@ class MainActivity : Activity() {
                 put("kernelVersion",System.getProperty("os.version") ?: JSONObject.NULL); put("selinuxEnforceRaw",safeRead("/sys/fs/selinux/enforce")?.trim() ?: JSONObject.NULL)
             })
             put("memory",JSONObject().apply { put("totalBytes",m.total); put("availableBytes",m.available); put("usedBytesEstimated",m.used); put("usedPercentEstimated",m.percent); put("thresholdBytes",m.threshold); put("lowMemory",m.low) })
-            put("storage",JSONObject().apply { put("dataPath",d.path); put("dataTotalBytes",d.total ?: JSONObject.NULL); put("dataAvailableBytes",d.available ?: JSONObject.NULL); put("dataFreeBytes",d.free ?: JSONObject.NULL); put("dataUsedPercentEstimated",d.usedPercent ?: JSONObject.NULL); put("externalPath",ext.path); put("externalTotalBytes",ext.total ?: JSONObject.NULL); put("externalAvailableBytes",ext.available ?: JSONObject.NULL) })
+            put("storage",JSONObject().apply {
+                put("dataPath",d.path); put("dataTotalBytes",d.total ?: JSONObject.NULL); put("dataAvailableBytes",d.available ?: JSONObject.NULL); put("dataFreeBytes",d.free ?: JSONObject.NULL); put("dataUsedPercentEstimated",d.usedPercent ?: JSONObject.NULL)
+                put("emulatedUserStoragePath",emulated.path); put("emulatedUserStorageTotalBytes",emulated.total ?: JSONObject.NULL); put("emulatedUserStorageAvailableBytes",emulated.available ?: JSONObject.NULL); put("emulatedUserStorageUsedPercentEstimated",emulated.usedPercent ?: JSONObject.NULL)
+                put("removableVolumes",JSONArray().apply { volumes.forEach { v -> put(JSONObject().apply { put("description",v.description); put("directoryPath",v.path ?: JSONObject.NULL); put("state",v.state); put("isPrimary",v.isPrimary); put("isRemovable",v.isRemovable); put("totalBytes",v.disk?.total ?: JSONObject.NULL); put("availableBytes",v.disk?.available ?: JSONObject.NULL); put("freeBytes",v.disk?.free ?: JSONObject.NULL); put("usedPercentEstimated",v.disk?.usedPercent ?: JSONObject.NULL) }) } })
+            })
             put("battery",JSONObject().apply {
                 put("levelPercent",b.level ?: JSONObject.NULL); put("statusRaw",b.status); put("statusText",b.statusText); put("pluggedRaw",b.plugged); put("pluggedText",b.pluggedText)
                 put("temperatureRawDeciC",b.tempRaw ?: JSONObject.NULL); put("temperatureC",b.tempC ?: JSONObject.NULL); put("voltageRawMillivolts",b.voltageRaw ?: JSONObject.NULL); put("voltageV",b.voltageV ?: JSONObject.NULL)
