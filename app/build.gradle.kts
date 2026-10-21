@@ -8,7 +8,7 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "il.devicelab.v2"
+        applicationId = "il.devicelab"
         minSdk = 33
         targetSdk = 35
         versionCode = 3
