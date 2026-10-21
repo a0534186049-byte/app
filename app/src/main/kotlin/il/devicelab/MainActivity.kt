@@ -170,7 +170,7 @@ class MainActivity : Activity() {
         val r3=row(); r3.addView(shortcut("ביצועים","מעבד, תדרים וטמפרטורות","↗") { open(Page.PERFORMANCE) },weight()); r3.addView(space(9)); r3.addView(shortcut("סוללה","זרם, טעינה וקובצי מערכת","ϟ") { open(Page.BATTERY) },weight()); content.addView(r3,match()); gap(9)
         val r4=row(); r4.addView(shortcut("רכיבי המכשיר","מסך, חיישנים וקודקים","◈") { open(Page.HARDWARE) },weight()); r4.addView(space(9)); r4.addView(shortcut("הגדרות ואבחון","ערכת נושא וייצוא JSON","⚙") { open(Page.SETTINGS) },weight()); content.addView(r4,match()); gap(15)
         noteCard("דיוק ושקיפות","ערכים מחושבים מסומנים כאומדן. נתון שחסום או לא זמין לא יוצג כאילו נמדד. אין לאפליקציה הרשאת אינטרנט או דרישת Root.")
-        gap(14); content.addView(txt("Device Lab 2.0.0 · האבחון נשאר מקומי",11f,colors.muted).apply { gravity=Gravity.CENTER })
+        gap(14); content.addView(txt("Device Lab 2.0.1 · האבחון נשאר מקומי",11f,colors.muted).apply { gravity=Gravity.CENTER })
     }
 
     private fun performancePage() {
@@ -298,7 +298,7 @@ class MainActivity : Activity() {
         addDetail(raw,"חיסכון בסוללה",if(runCatching { (getSystemService(Context.POWER_SERVICE) as PowerManager).isPowerSaveMode }.getOrDefault(false)) "פעיל" else "כבוי")
         addDetail(raw,"זמן פעילות",uptime()); addDetail(raw,"CPU time של האפליקציה",Process.getElapsedCpuTime().toString()+" ms")
         content.addView(raw,match()); gap(9)
-        val about=card("אודות","Device Lab 2.0.0 — מהדורת בדיקה")
+        val about=card("אודות","Device Lab 2.0.1 — מהדורת בדיקה")
         addDetail(about,"Application ID",packageName); addDetail(about,"Android",Build.VERSION.RELEASE+" · API "+Build.VERSION.SDK_INT)
         addDetail(about,"גישה לאינטרנט","אין הרשאת INTERNET"); addDetail(about,"Root / הרשאות אחסון רחבות","לא נדרשים")
         content.addView(about,match()); gap(14)
@@ -428,7 +428,7 @@ class MainActivity : Activity() {
         val sensors=runCatching { (getSystemService(Context.SENSOR_SERVICE) as SensorManager).getSensorList(Sensor.TYPE_ALL) }.getOrDefault(emptyList())
         val codecs=runCatching { MediaCodecList(MediaCodecList.ALL_CODECS).codecInfos.toList() }.getOrDefault(emptyList())
         val report=JSONObject().apply {
-            put("app","Device Lab"); put("version","2.0.0"); put("createdAt",SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX",Locale.US).format(Date()))
+            put("app","Device Lab"); put("version","2.0.1"); put("createdAt",SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX",Locale.US).format(Date()))
             put("themeMode",themeMode.name); put("internetPermissionDeclared",false)
             put("device",JSONObject().apply {
                 put("manufacturer",Build.MANUFACTURER); put("model",Build.MODEL); put("device",Build.DEVICE); put("board",Build.BOARD); put("hardware",Build.HARDWARE)
@@ -464,7 +464,7 @@ class MainActivity : Activity() {
             put("cameraIds",JSONArray(runCatching { (getSystemService(Context.CAMERA_SERVICE) as CameraManager).cameraIdList.toList() }.getOrDefault(emptyList())))
             put("systemFeatures",JSONArray(runCatching { packageManager.systemAvailableFeatures.mapNotNull { it.name }.distinct().sorted() }.getOrDefault(emptyList())))
             put("settings",JSONObject().apply { put("powerSaveMode",runCatching { (getSystemService(Context.POWER_SERVICE) as PowerManager).isPowerSaveMode }.getOrDefault(false)); put("deviceIdleMode",runCatching { (getSystemService(Context.POWER_SERVICE) as PowerManager).isDeviceIdleMode }.getOrDefault(false)); put("uptimeMs",SystemClock.elapsedRealtime()) })
-            put("notes",JSONArray(listOf("CPU percentages are estimates derived from two /proc/stat samples.","Thermal conversions from raw millidegrees are estimates; raw values are retained.","Reported values are not necessarily independently verified hardware measurements.","No Internet permission is declared.")))
+            put("notes",JSONArray(listOf("CPU percentages are estimates derived from two /proc/stat samples.","Thermal conversions from positive millidegree values are estimates; negative raw values are retained and flagged invalid.","Reported values are not necessarily independently verified hardware measurements.","No Internet permission is declared.")))
         }
         val intent=Intent(Intent.ACTION_CREATE_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type="application/json"; putExtra(Intent.EXTRA_TITLE,"device-lab-v2-"+System.currentTimeMillis()+".json") }
         pendingJson=report.toString(2)
