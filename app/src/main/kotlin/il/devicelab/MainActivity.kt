@@ -126,7 +126,7 @@ class MainActivity : Activity() {
     }
     private fun header() {
         val h=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; layoutDirection=View.LAYOUT_DIRECTION_RTL; gravity=Gravity.CENTER_VERTICAL }
-        h.addView(ImageView(this).apply { setImageResource(R.mipmap.ic_launcher); scaleType=ImageView.ScaleType.FIT_CENTER; background=rounded(colors.surface,17); setPadding(dp(2),dp(2),dp(2),dp(2)); contentDescription="Device Lab logo" },LinearLayout.LayoutParams(dp(50),dp(50)))
+        h.addView(ImageView(this).apply { setImageResource(R.mipmap.ic_launcher); scaleType=ImageView.ScaleType.FIT_CENTER; background=null; setPadding(0,0,0,0); contentDescription="Device Lab logo" },LinearLayout.LayoutParams(dp(50),dp(50)))
         val title=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; layoutDirection=View.LAYOUT_DIRECTION_RTL; setPadding(dp(12),0,0,0) }
         title.addView(txt("Device Lab",22f,colors.text,true)); title.addView(txt(titleForPage(),12f,colors.muted))
         h.addView(title,LinearLayout.LayoutParams(0,-2,1f))
