@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -33,10 +33,26 @@ jobs:
         run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
       - name: Compile APK
         run: gradle --no-daemon --console=plain --stacktrace --info assembleDebug
-      - name: Upload APK
+      - name: Upload APK artifact (backup)
         uses: actions/upload-artifact@v4
         with:
           name: DeviceLab-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
+      - name: Publish latest APK to GitHub Releases
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          apk_path="app/build/outputs/apk/debug/app-debug.apk"
+          tag="device-lab-latest"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            git tag -f "$tag" "$GITHUB_SHA"
+            git push origin "refs/tags/$tag" --force
+            gh release upload "$tag" "$apk_path" --clobber
+            gh release edit "$tag" --title "Device Lab - Latest APK" --notes "This APK is refreshed automatically after each successful build on main. Download app-debug.apk from Assets."
+          else
+            gh release create "$tag" "$apk_path" --title "Device Lab - Latest APK" --notes "This APK is refreshed automatically after each successful build on main. Download app-debug.apk from Assets." --prerelease --target "$GITHUB_SHA"
+          fi
