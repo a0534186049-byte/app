@@ -1,14 +1,14 @@
-# Device Lab 2.1.1
+# Device Lab 2.2.0
 
-Device Lab 2.1.1 is the current version on `main`. It keeps the original application ID (`il.devicelab`) so it can upgrade the existing Device Lab installation. The redesigned Hebrew-first dashboard includes bottom navigation, light/dark/system themes, the supplied launcher logo, estimate labeling, and local JSON export.
+Device Lab 2.2.0 adds optional Shizuku-backed per-app battery attribution. It keeps the original application ID (`il.devicelab`) so it can upgrade the existing Device Lab installation. The redesigned Hebrew-first dashboard includes bottom navigation, light/dark/system themes, the supplied launcher logo, estimate labeling, and local JSON export.
 
-## Included in version 2.1.1
+## Included in version 2.2.0
 - Device manufacturer, model, Android version, API level, board, hardware and supported ABIs
 - System RAM overview
 - Internal data partition, emulated user storage and removable storage volumes are reported separately where StorageManager exposes them
 - Battery level, charging status and temperature when reported by Android
-- Live whole-device battery current from BatteryManager, refreshed every two seconds while the battery screen is visible; sampling pauses in the background
-- Shortcut to Android system battery-usage breakdown by app when the device firmware exposes that screen; this is Android-attributed estimated usage, not instantaneous per-app current
+- Optional Shizuku connection to Android BatteryStats `pwi` records for per-UID app mAh estimates since the last charge, with refresh about every 30 seconds
+- Per-app values are Android attribution estimates, not isolated physical current readings; activation requires Shizuku and separate user approval
 - Uptime and app-process CPU time
 - Estimated whole-device/per-core CPU utilization from two `/proc/stat` snapshots where readable
 - CPU frequency files, thermal-zone raw values (negative values flagged invalid), sensor list, media codec types, camera IDs, and system feature list where exposed

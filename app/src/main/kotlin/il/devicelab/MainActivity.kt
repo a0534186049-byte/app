@@ -2,8 +2,10 @@ package il.devicelab
 
 import android.app.Activity
 import android.app.ActivityManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.ServiceConnection
 import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.Typeface
@@ -18,12 +20,14 @@ import android.os.Handler
 import android.os.Looper
 import android.os.Bundle
 import android.os.Environment
+import android.os.IBinder
 import android.os.PowerManager
 import android.os.Process
 import android.os.StatFs
 import android.os.SystemClock
 import android.os.storage.StorageManager
 import android.os.storage.StorageVolume
+import android.content.pm.PackageManager
 import android.util.DisplayMetrics
 import android.view.Gravity
 import android.view.View
@@ -43,6 +47,7 @@ import java.util.Locale
 import java.util.concurrent.Executors
 import org.json.JSONArray
 import org.json.JSONObject
+import rikka.shizuku.Shizuku
 
 /** Device Lab 2.0: Hebrew-first diagnostics. No Internet permission or root required. */
 class MainActivity : Activity() {
@@ -78,12 +83,75 @@ class MainActivity : Activity() {
     private data class Thermal(val name:String,val type:String,val raw:String,val celsius:Double?,val invalid:Boolean)
     private data class Cpu(val percent:Double?=null,val cores:Map<String,Double> = emptyMap(),val load:String?=null,val cpuInfo:String?=null,val stat1:String?=null,val stat2:String?=null,val sampledAt:String?=null,val intervalMs:Long?=null,val frequencies:List<Pair<String,String>> = emptyList(),val thermals:List<Thermal> = emptyList(),val coreCount:Int=0,val error:String?=null)
     private data class Sysfs(val name:String,val path:String,val raw:String?,val status:String)
+    private data class BatteryAppUsage(val uid:Int,val packages:List<String>,val label:String,val mah:Double,val deltaMah:Double?)
 
     private val fmt = DecimalFormat("#,##0.0")
     private val worker = Executors.newSingleThreadExecutor()
-    private val batteryLiveHandler = Handler(Looper.getMainLooper())
-    private var batteryLiveRunnable: Runnable? = null
-    private var batteryLiveTarget: TextView? = null
+    private val batteryStatsHandler = Handler(Looper.getMainLooper())
+    private var batteryStatsRunnable: Runnable? = null
+    private var batteryStatsRemote: IBatteryStatsUserService? = null
+    private var batteryStatsServiceConnecting = false
+    private var batteryStatsServiceBound = false
+    private var batteryStatsPermissionGranted = false
+    private var batteryStatsLoading = false
+    private var batteryStatsStatus = "טרם נבדק חיבור Shizuku"
+    private var batteryStatsUsage: List<BatteryAppUsage> = emptyList()
+    private var batteryStatsLastUpdate: String? = null
+    private val shizukuBinderReceivedListener = Shizuku.OnBinderReceivedListener {
+        batteryStatsStatus = "שירות Shizuku זוהה. לחץ על חיבור כדי לאשר גישה."
+        if (page == Page.BATTERY && !isFinishing) render()
+    }
+    private val shizukuBinderDeadListener = Shizuku.OnBinderDeadListener {
+        batteryStatsPermissionGranted = false
+        batteryStatsRemote = null
+        batteryStatsServiceBound = false
+        batteryStatsServiceConnecting = false
+        batteryStatsStatus = "שירות Shizuku נותק"
+        if (page == Page.BATTERY && !isFinishing) render()
+    }
+    private val shizukuPermissionResultListener = Shizuku.OnRequestPermissionResultListener { requestCode, grantResult ->
+        if (requestCode == REQUEST_SHIZUKU_PERMISSION) {
+            if (grantResult == PackageManager.PERMISSION_GRANTED) {
+                batteryStatsPermissionGranted = true
+                batteryStatsStatus = "האישור התקבל. מתחבר לשירות נתוני הסוללה…"
+                bindBatteryStatsService()
+            } else {
+                batteryStatsPermissionGranted = false
+                batteryStatsStatus = "לא אושרה גישה דרך Shizuku"
+                if (page == Page.BATTERY && !isFinishing) render()
+            }
+        }
+    }
+    private val batteryStatsServiceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+            batteryStatsServiceConnecting = false
+            val remote = service?.let { IBatteryStatsUserService.Stub.asInterface(it) }
+            if (remote == null) {
+                batteryStatsRemote = null
+                batteryStatsServiceBound = false
+                batteryStatsStatus = "שירות BatteryStats לא התחבר"
+            } else {
+                batteryStatsRemote = remote
+                batteryStatsServiceBound = true
+                batteryStatsPermissionGranted = true
+                batteryStatsStatus = "מחובר ל־Shizuku. אוסף נתוני צריכה לפי אפליקציה…"
+                fetchBatteryStats()
+            }
+            if (page == Page.BATTERY && !isFinishing) render()
+        }
+        override fun onServiceDisconnected(name: ComponentName?) {
+            batteryStatsRemote = null
+            batteryStatsServiceBound = false
+            batteryStatsServiceConnecting = false
+            batteryStatsStatus = "חיבור שירות BatteryStats נותק"
+            if (page == Page.BATTERY && !isFinishing) render()
+        }
+    }
+    private val batteryStatsUserServiceArgs by lazy {
+        Shizuku.UserServiceArgs(ComponentName(packageName, BatteryStatsUserService::class.java.name))
+            .daemon(false).processNameSuffix("batteryStats")
+            .debuggable(BuildConfig.DEBUG).version(BuildConfig.VERSION_CODE)
+    }
     private var page = Page.HOME
     private var themeMode = ThemeMode.SYSTEM
     private lateinit var colors: Palette
@@ -96,20 +164,34 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         themeMode = runCatching { ThemeMode.valueOf(getSharedPreferences(PREFS, MODE_PRIVATE).getString(KEY_THEME, "SYSTEM") ?: "SYSTEM") }.getOrDefault(ThemeMode.SYSTEM)
+        Shizuku.addBinderReceivedListenerSticky(shizukuBinderReceivedListener)
+        Shizuku.addBinderDeadListener(shizukuBinderDeadListener)
+        Shizuku.addRequestPermissionResultListener(shizukuPermissionResultListener)
         render()
         refreshCpu()
     }
+
     override fun onPause() {
-        stopBatteryLiveUpdates()
+        stopBatteryStatsPolling()
         super.onPause()
     }
 
     override fun onResume() {
         super.onResume()
-        if (page == Page.BATTERY) batteryLiveTarget?.let { startBatteryLiveUpdates(it) }
+        if (page == Page.BATTERY) startBatteryStatsPolling()
     }
 
-    override fun onDestroy() { stopBatteryLiveUpdates(clearTarget = true); worker.shutdownNow(); super.onDestroy() }
+    override fun onDestroy() {
+        stopBatteryStatsPolling()
+        Shizuku.removeBinderReceivedListener(shizukuBinderReceivedListener)
+        Shizuku.removeBinderDeadListener(shizukuBinderDeadListener)
+        Shizuku.removeRequestPermissionResultListener(shizukuPermissionResultListener)
+        if (batteryStatsServiceBound) {
+            runCatching { Shizuku.unbindUserService(batteryStatsUserServiceArgs, batteryStatsServiceConnection, true) }
+        }
+        worker.shutdownNow()
+        super.onDestroy()
+    }
 
     private fun palette(): Palette {
         val systemDark = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
@@ -119,7 +201,7 @@ class MainActivity : Activity() {
     }
 
     private fun render() {
-        stopBatteryLiveUpdates(clearTarget = true)
+        stopBatteryStatsPolling()
         colors = palette()
         window.statusBarColor = colors.bg
         window.navigationBarColor = colors.bg
@@ -186,7 +268,7 @@ class MainActivity : Activity() {
         val r3=row(); r3.addView(shortcut("ביצועים","מעבד, תדרים וטמפרטורות","↗") { open(Page.PERFORMANCE) },weight()); r3.addView(space(9)); r3.addView(shortcut("סוללה","זרם, טעינה וקובצי מערכת","ϟ") { open(Page.BATTERY) },weight()); content.addView(r3,match()); gap(9)
         val r4=row(); r4.addView(shortcut("רכיבי המכשיר","מסך, חיישנים וקודקים","◈") { open(Page.HARDWARE) },weight()); r4.addView(space(9)); r4.addView(shortcut("הגדרות ואבחון","ערכת נושא וייצוא JSON","⚙") { open(Page.SETTINGS) },weight()); content.addView(r4,match()); gap(15)
         noteCard("דיוק ושקיפות","ערכים מחושבים מסומנים כאומדן. נתון שחסום או לא זמין לא יוצג כאילו נמדד. אין לאפליקציה הרשאת אינטרנט או דרישת Root.")
-        gap(14); content.addView(txt("Device Lab 2.0.1 · האבחון נשאר מקומי",11f,colors.muted).apply { gravity=Gravity.CENTER })
+        gap(14); content.addView(txt("Device Lab 2.2.0 · האבחון נשאר מקומי",11f,colors.muted).apply { gravity=Gravity.CENTER })
     }
 
     private fun performancePage() {
@@ -228,19 +310,34 @@ class MainActivity : Activity() {
         addDetail(main,"בריאות לפי Android",b.healthRaw?.toString() ?: "לא דווח")
         content.addView(main,match()); gap(9)
 
-        val liveCard=card("צריכת זרם חיה — כל המכשיר","מדידה מהסוללה עצמה, מתעדכנת כל שתי שניות")
-        val liveValue=txt("אוסף נתון מהסוללה…",19f,colors.text,true)
-        liveCard.addView(liveValue)
-        gapIn(liveCard,6)
-        liveCard.addView(txt("זהו הזרם הכולל שנכנס לסוללה או יוצא ממנה. הוא אינו מחלק את הצריכה בין אפליקציות.",11f,colors.muted))
-        content.addView(liveCard,match()); gap(9)
-        startBatteryLiveUpdates(liveValue)
-
-        val appUsage=card("צריכת סוללה לפי אפליקציה","פירוט שמספקת מערכת Android")
-        appUsage.addView(txt("כדי לראות את האפליקציות ש־Android מייחס להן צריכת סוללה, פתח את מסך צריכת הסוללה של המערכת. הנתונים הם אומדני BatteryStats לפי תקופת המדידה של Android — לא מד זרם חי לכל אפליקציה.",12f,colors.muted))
+        val appUsage=card("צריכת סוללה לפי אפליקציה","BatteryStats של Android · אומדן mAh לכל UID מאז הטעינה האחרונה")
+        appUsage.addView(txt("הנתונים מגיעים ישירות מ־dumpsys batterystats דרך Shizuku. הם אומדני המערכת המצטברים מאז הטעינה האחרונה, לא זרם פיזי בזמן אמת. כשהחיבור פעיל, הרשימה מתרעננת כל 30 שניות.",11.5f,colors.muted))
+        gapIn(appUsage,8)
+        appUsage.addView(txt(batteryStatsStatus,12f,if(batteryStatsRemote!=null) colors.good else colors.warn,true))
+        batteryStatsLastUpdate?.let { addDetail(appUsage,"עודכן לאחרונה",it) }
+        if (batteryStatsUsage.isNotEmpty()) {
+            val totalMah=batteryStatsUsage.sumOf { it.mah }
+            addDetail(appUsage,"סך צריכה מיוחסת לאפליקציות",fmt.format(totalMah)+" mAh")
+            batteryStatsUsage.forEach { usage ->
+                val share=if(totalMah>0.0) (usage.mah*100.0/totalMah).toInt().coerceIn(0,100) else 0
+                progressRow(appUsage,usage.label,fmt.format(usage.mah)+" mAh · "+share+"%",share)
+                val packages=usage.packages.joinToString(", ").ifBlank { "לא סופקה התאמת package ל־UID" }
+                val deltaText=usage.deltaMah?.let { "שינוי מאז הדגימה הקודמת: "+(if(it>=0) "+" else "")+fmt.format(it)+" mAh" } ?: "אין דגימה קודמת להשוואת שינוי"
+                addDetail(appUsage,"UID "+usage.uid,packages+" · "+deltaText)
+            }
+        } else if (!batteryStatsLoading) {
+            appUsage.addView(txt("לא התקבלו עדיין נתוני mAh לפי אפליקציה. יש להפעיל Shizuku ולאשר את החיבור.",11.5f,colors.muted))
+        }
         gapIn(appUsage,10)
-        appUsage.addView(button("פתח פירוט צריכת הסוללה של Android",true) { openSystemBatteryUsage() })
+        appUsage.addView(button(if(batteryStatsLoading) "אוסף נתונים…" else "התחבר / רענן צריכת אפליקציות",true) {
+            if (batteryStatsRemote != null) fetchBatteryStats() else requestBatteryStatsAccess()
+        })
+        gapIn(appUsage,7)
+        appUsage.addView(button("התקן או פתח את Shizuku",false) { openShizukuDownload() })
+        gapIn(appUsage,7)
+        appUsage.addView(txt("הפעלה ללא מחשב אפשרית ב־Android 11 ומעלה דרך Wireless debugging, רק אם אפשרויות המפתחים אינן חסומות במכשיר. Shizuku דורש הפעלה מחדש לאחר אתחול. לא מתבצע שינוי בחסימת המכשיר מתוך Device Lab.",10.5f,colors.muted))
         content.addView(appUsage,match()); gap(9)
+        if (page == Page.BATTERY && batteryStatsRemote != null && batteryStatsPermissionGranted) startBatteryStatsPolling()
 
         val api=card("מדדי BatteryManager","ערכים כפי שה־API דיווח, ללא המרה")
         addDetail(api,"CURRENT_NOW",b.currentNow?.let { "$it µA" } ?: "לא דווח")
@@ -261,56 +358,141 @@ class MainActivity : Activity() {
         noteCard("הגבלת המידע","זרם ו־charge counter הם דיווחי מערכת. הם אינם מדידת בריאות סוללה, קיבולת מלאה מאומתת או מספר מחזורי טעינה.")
     }
 
-    private fun stopBatteryLiveUpdates(clearTarget: Boolean = false) {
-        batteryLiveRunnable?.let { batteryLiveHandler.removeCallbacks(it) }
-        batteryLiveRunnable = null
-        if (clearTarget) batteryLiveTarget = null
+    private fun stopBatteryStatsPolling() {
+        batteryStatsRunnable?.let { batteryStatsHandler.removeCallbacks(it) }
+        batteryStatsRunnable = null
     }
 
-    private fun startBatteryLiveUpdates(target: TextView) {
-        stopBatteryLiveUpdates()
-        batteryLiveTarget = target
-        val update = object : Runnable {
+    private fun startBatteryStatsPolling() {
+        stopBatteryStatsPolling()
+        if (page != Page.BATTERY || !batteryStatsPermissionGranted || batteryStatsRemote == null) return
+        if (batteryStatsLastUpdate == null && !batteryStatsLoading) fetchBatteryStats()
+        val task = object : Runnable {
             override fun run() {
-                if (page != Page.BATTERY || isFinishing || isDestroyed) return
-                val snapshot = battery()
-                val now = snapshot.currentNow
-                val average = snapshot.currentAvg
-                val nowText = now?.let {
-                    (if (it > 0L) "+" else "") + fmt.format(it / 1000.0) + " mA"
-                } ?: "לא זמין מהחיישן"
-                val averageText = average?.let {
-                    (if (it > 0L) "+" else "") + fmt.format(it / 1000.0) + " mA"
-                } ?: "לא דווח"
-                val direction = when {
-                    now == null -> "כיוון הזרם לא זמין"
-                    now > 0L -> "הזרם נכנס לסוללה — טעינה"
-                    now < 0L -> "הזרם יוצא מהסוללה — פריקה"
-                    else -> "לא נמדד זרם נטו כרגע"
-                }
-                val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-                target.text = "זרם רגעי: " + nowText +
-                    "\n" + direction +
-                    "\nזרם ממוצע: " + averageText +
-                    "\nסוללה: " + (snapshot.level?.toString()?.plus("%") ?: "לא זמין") +
-                    " · " + snapshot.statusText +
-                    "\nעדכון אחרון: " + timestamp
-                batteryLiveHandler.postDelayed(this, 2000L)
+                if (page != Page.BATTERY || isFinishing || isDestroyed || !batteryStatsPermissionGranted) return
+                if (!batteryStatsLoading) fetchBatteryStats()
+                batteryStatsHandler.postDelayed(this, 30_000L)
             }
         }
-        batteryLiveRunnable = update
-        update.run()
+        batteryStatsRunnable = task
+        batteryStatsHandler.postDelayed(task, 30_000L)
     }
 
-    private fun openSystemBatteryUsage() {
+    private fun requestBatteryStatsAccess() {
         try {
-            startActivity(Intent(Intent.ACTION_POWER_USAGE_SUMMARY))
+            if (!Shizuku.pingBinder()) {
+                batteryStatsStatus = "Shizuku לא פעיל. התקן את האפליקציה והפעל את השירות דרך Wireless debugging."
+                render()
+                return
+            }
+            if (Shizuku.isPreV11()) {
+                batteryStatsStatus = "גרסת Shizuku ישנה מדי. נדרשת גרסה 11 ומעלה."
+                render()
+                return
+            }
+            if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
+                batteryStatsPermissionGranted = true
+                bindBatteryStatsService()
+            } else {
+                batteryStatsStatus = "ממתין לאישור הרשאת Shizuku עבור Device Lab…"
+                render()
+                Shizuku.requestPermission(REQUEST_SHIZUKU_PERMISSION)
+            }
         } catch (t: Throwable) {
-            Toast.makeText(
-                this,
-                "הקושחה לא חשפה מסך פירוט צריכת סוללה של Android.",
-                Toast.LENGTH_LONG
-            ).show()
+            batteryStatsStatus = "לא ניתן להתחבר ל־Shizuku: "+(t.message ?: t.javaClass.simpleName)
+            render()
+        }
+    }
+
+    private fun bindBatteryStatsService() {
+        try {
+            if (!Shizuku.pingBinder() || !batteryStatsPermissionGranted) {
+                batteryStatsStatus = "Shizuku אינו פעיל או שההרשאה אינה מאושרת"
+                render()
+                return
+            }
+            if (batteryStatsRemote != null) { fetchBatteryStats(); return }
+            if (batteryStatsServiceConnecting) return
+            batteryStatsServiceConnecting = true
+            batteryStatsStatus = "מתחבר לשירות BatteryStats…"
+            render()
+            Shizuku.bindUserService(batteryStatsUserServiceArgs,batteryStatsServiceConnection)
+        } catch (t: Throwable) {
+            batteryStatsServiceConnecting = false
+            batteryStatsStatus = "חיבור Shizuku נכשל: "+(t.message ?: t.javaClass.simpleName)
+            render()
+        }
+    }
+
+    private fun fetchBatteryStats() {
+        val remote=batteryStatsRemote ?: return
+        if (batteryStatsLoading) return
+        batteryStatsLoading=true
+        batteryStatsStatus="קורא את נתוני BatteryStats של Android…"
+        if (page==Page.BATTERY && !isFinishing) render()
+        worker.execute {
+            val result=runCatching { remote.getChargedCheckin() }
+            runOnUiThread {
+                batteryStatsLoading=false
+                result.onSuccess { raw ->
+                    batteryStatsUsage=parseBatteryStatsCheckin(raw,batteryStatsUsage)
+                    batteryStatsLastUpdate=SimpleDateFormat("HH:mm:ss",Locale.getDefault()).format(Date())
+                    batteryStatsStatus=if(batteryStatsUsage.isEmpty()) {
+                        "Shizuku מחובר, אך Android לא החזיר רשומות mAh לפי אפליקציה בתקופת המדידה."
+                    } else "מחובר ל־Shizuku · נתוני מערכת מצטברים מאז הטעינה האחרונה"
+                }.onFailure { error ->
+                    batteryStatsStatus="קריאת BatteryStats נכשלה: "+(error.message ?: error.javaClass.simpleName)
+                }
+                if(page==Page.BATTERY && !isFinishing) render()
+            }
+        }
+    }
+
+    private fun parseBatteryStatsCheckin(raw:String,previous:List<BatteryAppUsage>):List<BatteryAppUsage> {
+        val packagesByUid=linkedMapOf<Int,MutableList<String>>()
+        raw.lineSequence().forEach { line ->
+            val p=line.trim().split(',')
+            if(p.size>=6 && p[2]=="i" && p[3]=="uid") {
+                val uid=p[4].toIntOrNull() ?: return@forEach
+                val pkg=p.drop(5).joinToString(",").trim()
+                if(pkg.isNotBlank()) packagesByUid.getOrPut(uid){ mutableListOf() }.add(pkg)
+            }
+        }
+        val mahByUid=linkedMapOf<Int,Double>()
+        raw.lineSequence().forEach { line ->
+            val p=line.trim().split(',')
+            if(p.size<6 || p[2]!="l" || p[3]!="pwi" || p[4]!="uid") return@forEach
+            val uid=p[1].toIntOrNull() ?: return@forEach
+            if(uid<=0) return@forEach
+            val mah=p[5].toDoubleOrNull() ?: return@forEach
+            if(mah.isNaN() || mah.isInfinite() || mah<0.0) return@forEach
+            mahByUid[uid]=(mahByUid[uid] ?: 0.0)+mah
+        }
+        val previousByUid=previous.associateBy { it.uid }
+        return mahByUid.map { (uid,mah) ->
+            val packages=packagesByUid[uid].orEmpty().distinct()
+            val labels=packages.mapNotNull { pkg ->
+                runCatching { packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg,0)).toString() }.getOrNull()
+            }.distinct()
+            val label=when {
+                labels.size==1 -> labels.first()
+                labels.size>1 -> labels.joinToString(" / ")
+                packages.isNotEmpty() -> packages.joinToString(", ")
+                else -> "אפליקציה UID $uid"
+            }
+            val previousMah=previousByUid[uid]?.mah
+            val delta=previousMah?.let { old -> (mah-old).takeIf { it>=-0.0001 } }
+            BatteryAppUsage(uid,packages,label,mah,delta)
+        }.filter { it.mah>0.0 }.sortedByDescending { it.mah }
+    }
+
+    private fun openShizukuDownload() {
+        try {
+            val launch = packageManager.getLaunchIntentForPackage("moe.shizuku.privileged.api")
+            if (launch != null) startActivity(launch)
+            else startActivity(Intent(Intent.ACTION_VIEW,android.net.Uri.parse("https://shizuku.rikka.app/download/")))
+        } catch (_:Throwable) {
+            Toast.makeText(this,"לא ניתן לפתוח את עמוד Shizuku במכשיר.",Toast.LENGTH_LONG).show()
         }
     }
 
@@ -382,7 +564,7 @@ class MainActivity : Activity() {
         addDetail(raw,"חיסכון בסוללה",if(runCatching { (getSystemService(Context.POWER_SERVICE) as PowerManager).isPowerSaveMode }.getOrDefault(false)) "פעיל" else "כבוי")
         addDetail(raw,"זמן פעילות",uptime()); addDetail(raw,"CPU time של האפליקציה",Process.getElapsedCpuTime().toString()+" ms")
         content.addView(raw,match()); gap(9)
-        val about=card("אודות","Device Lab 2.0.1 — מהדורת בדיקה")
+        val about=card("אודות","Device Lab 2.2.0 — מהדורת בדיקה")
         addDetail(about,"Application ID",packageName); addDetail(about,"Android",Build.VERSION.RELEASE+" · API "+Build.VERSION.SDK_INT)
         addDetail(about,"גישה לאינטרנט","אין הרשאת INTERNET"); addDetail(about,"Root / הרשאות אחסון רחבות","לא נדרשים")
         content.addView(about,match()); gap(14)
@@ -512,7 +694,7 @@ class MainActivity : Activity() {
         val sensors=runCatching { (getSystemService(Context.SENSOR_SERVICE) as SensorManager).getSensorList(Sensor.TYPE_ALL) }.getOrDefault(emptyList())
         val codecs=runCatching { MediaCodecList(MediaCodecList.ALL_CODECS).codecInfos.toList() }.getOrDefault(emptyList())
         val report=JSONObject().apply {
-            put("app","Device Lab"); put("version","2.0.1"); put("createdAt",SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX",Locale.US).format(Date()))
+            put("app","Device Lab"); put("version","2.2.0"); put("createdAt",SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX",Locale.US).format(Date()))
             put("themeMode",themeMode.name); put("internetPermissionDeclared",false)
             put("device",JSONObject().apply {
                 put("manufacturer",Build.MANUFACTURER); put("model",Build.MODEL); put("device",Build.DEVICE); put("board",Build.BOARD); put("hardware",Build.HARDWARE)
@@ -528,6 +710,9 @@ class MainActivity : Activity() {
                 put("removableVolumes",JSONArray().apply { volumes.forEach { v -> put(JSONObject().apply { put("description",v.description); put("directoryPath",v.path ?: JSONObject.NULL); put("state",v.state); put("isPrimary",v.isPrimary); put("isRemovable",v.isRemovable); put("totalBytes",v.disk?.total ?: JSONObject.NULL); put("availableBytes",v.disk?.available ?: JSONObject.NULL); put("freeBytes",v.disk?.free ?: JSONObject.NULL); put("usedPercentEstimated",v.disk?.usedPercent ?: JSONObject.NULL) }) } })
             })
             put("battery",JSONObject().apply {
+                put("batteryStatsSource","Shizuku / dumpsys batterystats --charged --checkin")
+                put("batteryStatsUpdatedAt",batteryStatsLastUpdate ?: JSONObject.NULL)
+                put("perAppUsageMahSinceLastCharge",JSONArray().apply { batteryStatsUsage.forEach { usage -> put(JSONObject().apply { put("uid",usage.uid); put("packages",JSONArray(usage.packages)); put("label",usage.label); put("mahEstimated",usage.mah); put("deltaMahSincePreviousSample",usage.deltaMah ?: JSONObject.NULL) }) } })
                 put("levelPercent",b.level ?: JSONObject.NULL); put("statusRaw",b.status); put("statusText",b.statusText); put("pluggedRaw",b.plugged); put("pluggedText",b.pluggedText)
                 put("temperatureRawDeciC",b.tempRaw ?: JSONObject.NULL); put("temperatureC",b.tempC ?: JSONObject.NULL); put("voltageRawMillivolts",b.voltageRaw ?: JSONObject.NULL); put("voltageV",b.voltageV ?: JSONObject.NULL)
                 put("healthRaw",b.healthRaw ?: JSONObject.NULL); put("technology",b.tech ?: JSONObject.NULL); put("isChargingApi",b.isCharging ?: JSONObject.NULL)
@@ -616,5 +801,5 @@ class MainActivity : Activity() {
     private fun match()=LinearLayout.LayoutParams(-1,-2)
     private fun weight()=LinearLayout.LayoutParams(0,-2,1f)
     private fun dp(v:Int)=(v*resources.displayMetrics.density).toInt()
-    companion object { private const val PREFS="device_lab_preferences"; private const val KEY_THEME="theme_mode"; private const val EXPORT_REQUEST=2410 }
+    companion object { private const val PREFS="device_lab_preferences"; private const val KEY_THEME="theme_mode"; private const val EXPORT_REQUEST=2410; private const val REQUEST_SHIZUKU_PERMISSION=4512 }
 }
