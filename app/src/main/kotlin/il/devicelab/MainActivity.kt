@@ -14,6 +14,8 @@ import android.hardware.camera2.CameraManager
 import android.media.MediaCodecList
 import android.os.BatteryManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.Bundle
 import android.os.Environment
 import android.os.PowerManager
@@ -79,6 +81,8 @@ class MainActivity : Activity() {
 
     private val fmt = DecimalFormat("#,##0.0")
     private val worker = Executors.newSingleThreadExecutor()
+    private val batteryLiveHandler = Handler(Looper.getMainLooper())
+    private var batteryLiveRunnable: Runnable? = null
     private var page = Page.HOME
     private var themeMode = ThemeMode.SYSTEM
     private lateinit var colors: Palette
@@ -94,7 +98,7 @@ class MainActivity : Activity() {
         render()
         refreshCpu()
     }
-    override fun onDestroy() { worker.shutdownNow(); super.onDestroy() }
+    override fun onDestroy() { stopBatteryLiveUpdates(); worker.shutdownNow(); super.onDestroy() }
 
     private fun palette(): Palette {
         val systemDark = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
@@ -104,6 +108,7 @@ class MainActivity : Activity() {
     }
 
     private fun render() {
+        stopBatteryLiveUpdates()
         colors = palette()
         window.statusBarColor = colors.bg
         window.navigationBarColor = colors.bg
@@ -211,6 +216,21 @@ class MainActivity : Activity() {
         addDetail(main,"מתח סוללה",b.voltageV?.let { fmt.format(it)+" V" } ?: "לא דווח"); addDetail(main,"טכנולוגיה",b.tech ?: "לא דווח")
         addDetail(main,"בריאות לפי Android",b.healthRaw?.toString() ?: "לא דווח")
         content.addView(main,match()); gap(9)
+
+        val liveCard=card("צריכת זרם חיה — כל המכשיר","מדידה מהסוללה עצמה, מתעדכנת כל שתי שניות")
+        val liveValue=txt("אוסף נתון מהסוללה…",19f,colors.text,true)
+        liveCard.addView(liveValue)
+        gapIn(liveCard,6)
+        liveCard.addView(txt("זהו הזרם הכולל שנכנס לסוללה או יוצא ממנה. הוא אינו מחלק את הצריכה בין אפליקציות.",11f,colors.muted))
+        content.addView(liveCard,match()); gap(9)
+        startBatteryLiveUpdates(liveValue)
+
+        val appUsage=card("צריכת סוללה לפי אפליקציה","פירוט שמספקת מערכת Android")
+        appUsage.addView(txt("כדי לראות את האפליקציות ש־Android מייחס להן צריכת סוללה, פתח את מסך צריכת הסוללה של המערכת. הנתונים הם אומדני BatteryStats לפי תקופת המדידה של Android — לא מד זרם חי לכל אפליקציה.",12f,colors.muted))
+        gapIn(appUsage,10)
+        appUsage.addView(button("פתח פירוט צריכת הסוללה של Android",true) { openSystemBatteryUsage() })
+        content.addView(appUsage,match()); gap(9)
+
         val api=card("מדדי BatteryManager","ערכים כפי שה־API דיווח, ללא המרה")
         addDetail(api,"CURRENT_NOW",b.currentNow?.let { "$it µA" } ?: "לא דווח")
         addDetail(api,"CURRENT_AVERAGE",b.currentAvg?.let { "$it µA" } ?: "לא דווח")
@@ -228,6 +248,57 @@ class MainActivity : Activity() {
         addDetail(ram,"RAM זמין",gb(m.available)+" GB"); addDetail(ram,"סף low-memory",mb(m.threshold)+" MB"); addDetail(ram,"המערכת מסמנת lowMemory",if(m.low) "כן" else "לא")
         content.addView(ram,match()); gap(10)
         noteCard("הגבלת המידע","זרם ו־charge counter הם דיווחי מערכת. הם אינם מדידת בריאות סוללה, קיבולת מלאה מאומתת או מספר מחזורי טעינה.")
+    }
+
+    private fun stopBatteryLiveUpdates() {
+        batteryLiveRunnable?.let { batteryLiveHandler.removeCallbacks(it) }
+        batteryLiveRunnable = null
+    }
+
+    private fun startBatteryLiveUpdates(target: TextView) {
+        stopBatteryLiveUpdates()
+        val update = object : Runnable {
+            override fun run() {
+                if (page != Page.BATTERY || isFinishing || isDestroyed) return
+                val snapshot = battery()
+                val now = snapshot.currentNow
+                val average = snapshot.currentAvg
+                val nowText = now?.let {
+                    (if (it > 0L) "+" else "") + fmt.format(it / 1000.0) + " mA"
+                } ?: "לא זמין מהחיישן"
+                val averageText = average?.let {
+                    (if (it > 0L) "+" else "") + fmt.format(it / 1000.0) + " mA"
+                } ?: "לא דווח"
+                val direction = when {
+                    now == null -> "כיוון הזרם לא זמין"
+                    now > 0L -> "הזרם נכנס לסוללה — טעינה"
+                    now < 0L -> "הזרם יוצא מהסוללה — פריקה"
+                    else -> "לא נמדד זרם נטו כרגע"
+                }
+                val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+                target.text = "זרם רגעי: " + nowText +
+                    "\n" + direction +
+                    "\nזרם ממוצע: " + averageText +
+                    "\nסוללה: " + (snapshot.level?.toString()?.plus("%") ?: "לא זמין") +
+                    " · " + snapshot.statusText +
+                    "\nעדכון אחרון: " + timestamp
+                batteryLiveHandler.postDelayed(this, 2000L)
+            }
+        }
+        batteryLiveRunnable = update
+        update.run()
+    }
+
+    private fun openSystemBatteryUsage() {
+        try {
+            startActivity(Intent(Intent.ACTION_POWER_USAGE_SUMMARY))
+        } catch (t: Throwable) {
+            Toast.makeText(
+                this,
+                "הקושחה לא חשפה מסך פירוט צריכת סוללה של Android.",
+                Toast.LENGTH_LONG
+            ).show()
+        }
     }
 
     private fun hardwarePage() {
