@@ -83,6 +83,7 @@ class MainActivity : Activity() {
     private val worker = Executors.newSingleThreadExecutor()
     private val batteryLiveHandler = Handler(Looper.getMainLooper())
     private var batteryLiveRunnable: Runnable? = null
+    private var batteryLiveTarget: TextView? = null
     private var page = Page.HOME
     private var themeMode = ThemeMode.SYSTEM
     private lateinit var colors: Palette
@@ -98,7 +99,17 @@ class MainActivity : Activity() {
         render()
         refreshCpu()
     }
-    override fun onDestroy() { stopBatteryLiveUpdates(); worker.shutdownNow(); super.onDestroy() }
+    override fun onPause() {
+        stopBatteryLiveUpdates()
+        super.onPause()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (page == Page.BATTERY) batteryLiveTarget?.let { startBatteryLiveUpdates(it) }
+    }
+
+    override fun onDestroy() { stopBatteryLiveUpdates(clearTarget = true); worker.shutdownNow(); super.onDestroy() }
 
     private fun palette(): Palette {
         val systemDark = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
@@ -108,7 +119,7 @@ class MainActivity : Activity() {
     }
 
     private fun render() {
-        stopBatteryLiveUpdates()
+        stopBatteryLiveUpdates(clearTarget = true)
         colors = palette()
         window.statusBarColor = colors.bg
         window.navigationBarColor = colors.bg
@@ -250,13 +261,15 @@ class MainActivity : Activity() {
         noteCard("הגבלת המידע","זרם ו־charge counter הם דיווחי מערכת. הם אינם מדידת בריאות סוללה, קיבולת מלאה מאומתת או מספר מחזורי טעינה.")
     }
 
-    private fun stopBatteryLiveUpdates() {
+    private fun stopBatteryLiveUpdates(clearTarget: Boolean = false) {
         batteryLiveRunnable?.let { batteryLiveHandler.removeCallbacks(it) }
         batteryLiveRunnable = null
+        if (clearTarget) batteryLiveTarget = null
     }
 
     private fun startBatteryLiveUpdates(target: TextView) {
         stopBatteryLiveUpdates()
+        batteryLiveTarget = target
         val update = object : Runnable {
             override fun run() {
                 if (page != Page.BATTERY || isFinishing || isDestroyed) return

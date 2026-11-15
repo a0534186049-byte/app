@@ -11,8 +11,8 @@ android {
         applicationId = "il.devicelab"
         minSdk = 33
         targetSdk = 35
-        versionCode = 4
-        versionName = "2.1.0"
+        versionCode = 5
+        versionName = "2.1.1"
     }
 
     buildTypes {
